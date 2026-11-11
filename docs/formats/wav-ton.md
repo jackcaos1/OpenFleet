@@ -1,0 +1,6 @@
+# Ton (WAV)
+
+- Alle Klangdateien (`sounds/effects` 225, `sounds/music` 45, `sounds/voiceover` 1100+, `wav/` 5) sind **unkomprimiertes PCM** (Format-Tag 1), 8 oder 16 Bit, mono oder stereo, 22,05 oder 44,1 kHz. Kein Decoder noetig: `formats/Wav.*` (`ParseWav`, 8 Bit wird auf 16 Bit gespreizt).
+- ODF-Schluessel: `fireSound` (124 Waffen), `hitSound`, `explSound`, `ambientSound` (Nebel `msnebl`/`msnebam`, Schwarzes Loch `msblack`, Wurmloch `msworm`), `openSound`, `soundThrust` u. a. Die Namen verweisen auf `sounds/effects/<name>`.
+- Musik: je Volk (`Mfed`, `Mbor`, `Mkli`, `MRom`) Stuecke mit Zahl im Namen (5, 10, 15a/b, 25/30, 45a/b, 100, 115, 300); die Zahl ist vermutlich die Laenge in Sekunden (MRom10 = 11 s). **Annahme:** `<volk>300` (rund 3 Minuten) ist die Dauerschleife, die Karte spielt sie in der Rasse des Spielers; Rueckfall `115`. Wie das Original die Stuecke waehlt, ist unbekannt. `TRANS1-3` sind vermutlich Uebergaenge.
+- Mischer: `audio/Mixer.*` (plattformfrei, Linearresampling, Schwenk nach Sinus-/Kosinusgesetz, harte Begrenzung). Ausgabe: SDL (`desktop/`), AAudio (`android/`), beide rufen `Game::MixAudio`. Dauergeraeusche der Karte: je Klang eine Stimme, Lautstaerke nach Abstand der naechsten Quelle zum Blickpunkt (Reichweite 1500).

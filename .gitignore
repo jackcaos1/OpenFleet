@@ -1,0 +1,60 @@
+# --- Original game material and anything derived from it: NEVER commit ---
+originalFiles/
+reference/
+work/
+extracted/
+*.zfs
+*.bik
+*.dll
+*.exe
+*.sod
+*.spr
+*.bzn
+*.tga
+*.pal
+*.fnt
+*.wav
+*.mp3
+*.ogg
+*.odf
+*.tt
+# Dumps, screenshots and scratch output from tools/tests
+*.ppm
+*.bak
+*.bak[0-9]
+*.orig
+*.log
+*.dump
+out.*
+
+# --- Build output ---
+build/
+cmake-build-*/
+.gradle/
+.cxx/
+.kotlin/
+android/local.properties
+captures/
+*.apk
+*.aab
+*.so
+*.o
+*.a
+compile_commands.json
+
+# --- Signing keys / secrets ---
+*.jks
+*.keystore
+*.pem
+.env
+
+# --- Editors, OS, caches ---
+.idea/
+.vscode/
+*.iml
+.cache/
+.DS_Store
+Thumbs.db
+*.swp
+__pycache__/
+*.pyc

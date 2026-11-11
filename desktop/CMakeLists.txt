@@ -1,0 +1,20 @@
+find_package(SDL2 CONFIG QUIET)
+if(NOT SDL2_FOUND)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
+  endif()
+endif()
+if(NOT TARGET SDL2::SDL2 AND NOT TARGET PkgConfig::SDL2)
+  message(FATAL_ERROR
+    "SDL2 nicht gefunden. Unter Debian/Ubuntu: sudo apt install libsdl2-dev. "
+    "Zum Bauen ohne Desktop-Launcher: -DFLEET_BUILD_DESKTOP=OFF")
+endif()
+
+add_executable(fleetclient_desktop main.cpp)
+target_link_libraries(fleetclient_desktop PRIVATE fleet_game)
+if(TARGET SDL2::SDL2)
+  target_link_libraries(fleetclient_desktop PRIVATE SDL2::SDL2)
+else()
+  target_link_libraries(fleetclient_desktop PRIVATE PkgConfig::SDL2)
+endif()

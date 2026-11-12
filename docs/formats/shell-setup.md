@@ -55,6 +55,16 @@ units = 1, +0x84 = 0; per slot 0x4bf800 (kind 0, team 2?, handicap 100). Dilithi
 the value is not one of the five list entries the host's list selection falls back to the first entry (0x539a71 .. 0x539ac5: found -> select it, not found -> select
 entry 0 and write it to the settings). The meaning of some default numbers (+0x68 = 9 for the maximum players combo, +0x78 = 2 for the game type) was not decoded.
 
+## Map selection screen (0x530b70, section `multiplayer_map_select`)
+Popup with the background `bitmaps/misc/DBmsBG.bmp` (393 x 290); elements relative to it: filter combo 242, 2, 128 x 20 (entries `all_maps`, `maximum_players_8` .. `_2`),
+list rows x 15, width 345, height 14 (row pitch and first row are estimated: 48 + 14 k), scroll bar 376, 48, 14 x 187 with arrows 376, 27 (14 x 21) and 376, 235 (14 x 20),
+buttons `select_map_button` 19, 258 and `cancel_button` 260, 258 (112 x 30, plates `navback` / `navmain`). The placement of the popup on the screen (client: centred) is not read.
+
+## Client (build 75)
+Implemented after this specification: all widgets above with the label texts, tapping cycles a combo / toggle (the original opens a drop-down list), the map is chosen
+through the "select map" popup, the options are stored (`game/Skirmish.*`); effective so far: default units (starting units from the race ODFs with the spiral placement). Colour key magenta (255, 0, 255) of the
+bitmaps is transparent.
+
 ## Open
 - Exact column x of the player row items and the row start (client uses y = 57 + 19 i from the background bitmap).
 - Behaviour of each option on the session (which options the single player instant action honours).

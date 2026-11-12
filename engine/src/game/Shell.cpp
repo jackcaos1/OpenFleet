@@ -60,15 +60,25 @@ void Slot(ShellLayout* L, const Frame& f, const HudData* font, float x, float y,
   }
 }
 
+// Spiel-Einrichtung (Armada.exe 0x536250): Rechtecke aus dem Aufbaucode, Texte aus label.map (docs/formats/shell-setup.md).
+void Plate(ShellLayout* L, const Frame& f, const std::string& base, int state, float x, float y, float w, float h) {
+  L->draws.push_back(Quad("bitmaps/multiset/" + base + std::to_string(state) + ".bmp", f.ox + x * f.s, f.oy + y * f.s, w * f.s, h * f.s));
+}
+
 void BuildSkirmish(ShellLayout* L, float s, float ox, float oy, const std::string& pressed, const HudData* font, const SkirmishView* sk) {
   Frame f;
   f.s = s; f.ox = ox; f.oy = oy;
-  static const float kInk[3] = {0.05f, 0.04f, 0.03f}, kWhite[3] = {1, 1, 1}, kGold[3] = {1.0f, 0.88f, 0.35f}, kGreen[3] = {0.55f, 1.0f, 0.65f};
+  static const float kInk[3] = {0.05f, 0.04f, 0.03f}, kWhite[3] = {1, 1, 1}, kGreen[3] = {0.55f, 1.0f, 0.65f};
   SkirmishView empty;
   if (!sk) sk = &empty;
-  Slot(L, f, font, 8, 8, 330, 16, "GAME SETUP", kWhite, false, "", true, false, false);
+  Slot(L, f, font, 64, 6, 178, 20, sk->title, kWhite, false, "", true, false, false);
+  Slot(L, f, font, 5, 32, 140, 14, sk->col_name, kWhite, false, "", true, false, false);
+  Slot(L, f, font, 167, 32, 75, 14, sk->col_side, kWhite, false, "", true, false, false);
+  Slot(L, f, font, 273, 32, 35, 14, sk->col_team, kWhite, false, "", true, false, false);
+  Slot(L, f, font, 385, 7, 100, 14, sk->col_game, kWhite, false, "", true, false, false);
+  Slot(L, f, font, 5, 234, 80, 14, sk->label_messages, kWhite, false, "", true, false, false);
   for (int i = 0; i < 8; ++i) {
-    const float y = 57.0f + 19.0f * static_cast<float>(i);
+    const float y = 57.0f + 19.0f * static_cast<float>(i);  // Zeilenabstand aus dem Hintergrundbild (Zeilenhoehe 19 laut Code)
     const SkirmishSlotView& v = sk->slot[i];
     const bool on = v.state == 1;
     const std::string n = std::to_string(i);
@@ -76,23 +86,46 @@ void BuildSkirmish(ShellLayout* L, float s, float ox, float oy, const std::strin
     Slot(L, f, font, 151, y, 109, 14, v.race, kInk, false, on ? "slot_race:" + n : "", on, pressed == "slot_race:" + n, false);
     Slot(L, f, font, 262, y, 55, 14, v.team, kInk, false, on ? "slot_team:" + n : "", on, pressed == "slot_team:" + n, false);
   }
-  // rechte Spalte: Kartenliste (14 Felder: Pfeil hoch, 12 Karten, Pfeil runter)
-  Slot(L, f, font, 526, 63, 107, 14, "^", kInk, true, "map_up", sk->can_up, pressed == "map_up", false);
-  for (int k = 0; k < 12; ++k) {
-    const float y = 63.0f + 24.0f * static_cast<float>(k + 1);
-    const bool have = k < static_cast<int>(sk->maps.size());
-    const std::string id = "map:" + std::to_string(k);
-    Slot(L, f, font, 526, y, 107, 14, have ? sk->maps[static_cast<size_t>(k)] : std::string(), k == sk->selected ? kGold : kInk, false, have ? id : "", have, pressed == id, k == sk->selected);
+  for (const SkirmishOptionView& o : sk->options) {
+    const std::string id = "opt:" + std::to_string(o.id);
+    Slot(L, f, font, o.x + 3, o.y, o.w - 6, o.h - 4, o.text, kInk, true, id, o.enabled, pressed == id, false);
   }
-  Slot(L, f, font, 526, 63 + 24 * 13, 107, 14, "v", kInk, true, "map_down", sk->can_down, pressed == "map_down", false);
-  if (!sk->title.empty()) Slot(L, f, font, 384, 36, 248, 16, sk->title, kGold, false, "", true, false, false);
+  if (!sk->map_name.empty()) Slot(L, f, font, 385, 104, 130, 14, sk->map_name, kWhite, false, "", true, false, false);
   if (!sk->preview.empty()) L->draws.push_back(Quad(sk->preview, f.ox + 385 * f.s, f.oy + 138 * f.s, 128 * f.s, 128 * f.s));
-  Slot(L, f, font, 387, 275, 124, 14, sk->res_label, kInk, false, "res", true, pressed == "res", false);
-  // Infofeld links unten (Kommentar-/Chatfeld des Originals)
+  Plate(L, f, "mps128tg", pressed == "select_map" ? 2 : 1, 385, 272, 128, 20);
+  Slot(L, f, font, 385, 272, 128, 20, sk->btn_select_map, kInk, true, "select_map", true, false, false);
   for (size_t i = 0; i < sk->info.size() && i < 12; ++i) Slot(L, f, font, 12, 258.0f + 13.0f * static_cast<float>(i), 308, 12, sk->info[i], kWhite, false, "", true, false, false);
-  Slot(L, f, font, 9, 450, 106, 21, "Previous Menu", kInk, true, "back", true, pressed == "back", false);
-  Slot(L, f, font, 126, 449, 390, 23, "LAUNCH", kInk, true, "start", true, pressed == "start", false);
-  Slot(L, f, font, 527, 450, 106, 21, "Main Menu", kInk, true, "mainmenu", true, pressed == "mainmenu", false);
+  Plate(L, f, "navback", pressed == "back" ? 2 : 1, 6, 446, 112, 30);
+  Slot(L, f, font, 6, 446 + 8, 112, 14, sk->btn_prev, kInk, true, "back", true, false, false);
+  Plate(L, f, "mpsstart", pressed == "start" ? 2 : 1, 124, 446, 395, 30);
+  Slot(L, f, font, 124, 446 + 8, 395, 14, sk->btn_launch, kInk, true, "start", true, false, false);
+  Plate(L, f, "navmain", pressed == "mainmenu" ? 2 : 1, 524, 446, 112, 30);
+  Slot(L, f, font, 524, 446 + 8, 112, 14, sk->btn_main, kInk, true, "mainmenu", true, false, false);
+}
+
+// Kartenauswahl (Armada.exe 0x530b70, Hintergrund bitmaps/misc/DBmsBG.bmp 393 x 290, Elemente relativ dazu). Platzierung im Bild und Zeilenabstand der Liste sind geschaetzt.
+void BuildSkirmishMap(ShellLayout* L, float s, float ox, float oy, const std::string& pressed, const HudData* font, const SkirmishView* sk) {
+  Frame f;
+  f.s = s; f.ox = ox; f.oy = oy;
+  static const float kInk[3] = {0.05f, 0.04f, 0.03f}, kGold[3] = {1.0f, 0.88f, 0.35f}, kWhite[3] = {1, 1, 1};
+  SkirmishView empty;
+  if (!sk) sk = &empty;
+  const float px = (640.0f - 393.0f) * 0.5f, py = (480.0f - 290.0f) * 0.5f;  // mittig (Platzierung geschaetzt)
+  L->draws.push_back(Quad("bitmaps/misc/DBmsBG.bmp", f.ox + px * f.s, f.oy + py * f.s, 393 * f.s, 290 * f.s));
+  Slot(L, f, font, px + 242, py + 2, 128, 20, sk->filter_text, kInk, true, "mapsel_filter", true, pressed == "mapsel_filter", false);
+  Plate(L, f, "navback", pressed == "mapsel_ok" ? 2 : 1, px + 19, py + 258, 112, 30);
+  Slot(L, f, font, px + 19, py + 258 + 8, 112, 14, sk->btn_select, kInk, true, "mapsel_ok", sk->selected >= 0, false, false);
+  Plate(L, f, "navmain", pressed == "mapsel_cancel" ? 2 : 1, px + 260, py + 258, 112, 30);
+  Slot(L, f, font, px + 260, py + 258 + 8, 112, 14, sk->btn_cancel, kInk, true, "mapsel_cancel", true, false, false);
+  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrollup") + (pressed == "mapsel_up" ? "2" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 27) * f.s, 14 * f.s, 21 * f.s));
+  { ShellButton b; b.id = "mapsel_up"; b.enabled = sk->can_up; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 22) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
+  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrolldn") + (pressed == "mapsel_down" ? "2" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 235) * f.s, 14 * f.s, 20 * f.s));
+  { ShellButton b; b.id = "mapsel_down"; b.enabled = sk->can_down; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 230) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
+  for (size_t k = 0; k < sk->maps.size() && k < 13; ++k) {
+    const std::string id = "mapsel:" + std::to_string(k);
+    Slot(L, f, font, px + 15, py + 48 + 14.0f * static_cast<float>(k), 345, 12, sk->maps[k], static_cast<int>(k) == sk->selected ? kGold : kWhite, false, id, true, pressed == id,
+         static_cast<int>(k) == sk->selected);
+  }
 }
 
 // "Multiplayer Connection" (bitmaps/wonlogin, Platten bitmaps/multiset). Positionen aus einem Bildschirmfoto des Originals (Bezug 640x480), nicht aus einer Datei.
@@ -137,7 +170,7 @@ ShellLayout BuildShell(ShellScreen screen, int width, int height, const std::str
   f.ox = 0.5f * (W - 640.0f * f.s);
   f.oy = 0.5f * (H - 480.0f * f.s);
   const bool main = screen == ShellScreen::Main;
-  const bool skirm = screen == ShellScreen::Skirmish;
+  const bool skirm = screen == ShellScreen::Skirmish || screen == ShellScreen::SkirmishMap;
   const bool multi = screen == ShellScreen::Multi;
   const std::string bg = skirm ? "bitmaps/multiset/mpsBG.bmp" : multi ? "bitmaps/wonlogin/wlsBG.bmp" : main ? "bitmaps/main/mainbk.BMP" : "bitmaps/single/singlebk.bmp";
   {  // Ersatz fuer schwarze Balken: derselbe Hintergrund, ueber den ganzen Bildschirm gezogen und abgedunkelt
@@ -151,7 +184,16 @@ ShellLayout BuildShell(ShellScreen screen, int width, int height, const std::str
     return L;
   }
   if (skirm) {
-    BuildSkirmish(&L, f.s, f.ox, f.oy, pressed, font, sk);
+    if (screen == ShellScreen::SkirmishMap) {
+      BuildSkirmish(&L, f.s, f.ox, f.oy, "", font, sk);
+      L.buttons.clear();  // die Einrichtung dahinter ist gesperrt
+      L.draws.push_back(Quad("", 0, 0, W, H, 0.0f));
+      L.draws.back().rgba[0] = L.draws.back().rgba[1] = L.draws.back().rgba[2] = 0.0f;
+      L.draws.back().rgba[3] = 0.45f;
+      BuildSkirmishMap(&L, f.s, f.ox, f.oy, pressed, font, sk);
+    } else {
+      BuildSkirmish(&L, f.s, f.ox, f.oy, pressed, font, sk);
+    }
     return L;
   }
   std::vector<Def> defs;

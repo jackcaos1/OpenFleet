@@ -37,6 +37,8 @@
 #include "game/Cinematic.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
+#include "game/Skirmish.h"
+#include "formats/LabelMap.h"
 #include "game/Teams.h"
 #include "game/Shell.h"
 #include "game/FireDemo.h"
@@ -2542,12 +2544,47 @@ struct Game::Impl {
   // --- Skirmish-Einstellung ---
   struct SkSlot { int kind = 0; int race = 0; int team = 1; };  // kind: 0 geschlossen, 1 Mensch, 2 Computer
   std::vector<std::string> sk_maps;    // Dateistamm; Eintrag 0 = leere Karte (nur zum Ausprobieren)
-  std::vector<int> sk_players;         // Startplaetze je Karte 
-  int sk_sel = 0, sk_first = 0, sk_res = 1;
+  int sk_sel = 0;
   SkSlot sk_slot[8];
-  std::vector<std::pair<int, int>> sk_starts;  // Startfelder der gewaehlten Karte
-  static constexpr const char* kSkRaces[4] = {"F\xC3\xB6" "deration", "Klingonen", "Romulaner", "Borg"};
-  static constexpr const char* kSkRes[3] = {"Wenig", "Normal", "Viel"};
+  std::vector<std::pair<int, int>> sk_starts;  // Startpunkte der gewaehlten Karte (Rasterpunkte der .mdf, keine Weltkoordinaten)
+  SkirmishSettings sk_set;
+  LabelMap labels;                             // label.map (Texte der Menues)
+  bool labels_loaded = false;
+  int sk_filter = 0;                           // Kartenauswahl: 0 alle, sonst Spielerzahl 8..2
+  int sk_pick = -1, sk_first = 0;              // Auswahl und erster sichtbarer Eintrag der gefilterten Liste
+  std::vector<int> sk_players;                 // Spielerzahl je Karte (StartLocations der .mdf)
+  // Reihenfolge des Rassen-Auswahlfelds im Original: federation, borg, romulan, klingon, random
+  static constexpr const char* kSkRaceKeys[5] = {"federation", "borg", "romulan", "klingon", "random"};
+  static constexpr char kSkRaceLetter[4] = {'f', 'b', 'r', 'k'};
+
+  void LoadLabels() {
+    if (labels_loaded || !source) return;
+    std::vector<uint8_t> b;
+    if (source->ReadFile("label.map", &b)) labels.Parse(std::string(b.begin(), b.end()));
+    labels_loaded = true;
+  }
+  std::string Lbl(const char* key, const char* fb = "") const { return labels.Get("multiplayer_setup", key, fb); }
+
+  int MdfPlayers(const std::string& name) const {
+    std::vector<uint8_t> b;
+    if (!source || !source->ReadFile("bzn/" + name + ".mdf", &b)) return 0;
+    std::istringstream in(std::string(b.begin(), b.end()));
+    std::string line;
+    while (std::getline(in, line)) {
+      std::istringstream ls(line);
+      std::string k, eq;
+      int n = 0;
+      ls >> k >> eq >> n;
+      if (k == "StartLocations") return n;
+    }
+    return 0;
+  }
+  std::vector<int> FilteredMaps() const {
+    std::vector<int> r;
+    for (size_t i = 0; i < sk_maps.size(); ++i)
+      if (sk_filter == 0 || (i < sk_players.size() && sk_players[i] == sk_filter)) r.push_back(static_cast<int>(i));
+    return r;
+  }
 
   void SkLoadMapInfo() {
     sk_starts.clear();
@@ -2566,6 +2603,7 @@ struct Game::Impl {
   }
 
   void SkEnter() {
+    LoadLabels();
     EnsureMapFiles();
     if (sk_maps.empty()) {
       std::vector<std::string> names;
@@ -2581,12 +2619,12 @@ struct Game::Impl {
           if (ToLowerAscii(f) == ToLowerAscii(n) + ".bzn") has_bzn = true;
         if (!has_bzn) continue;
         sk_maps.push_back(n);
-        sk_players.push_back(0);
+        sk_players.push_back(MdfPlayers(n));
       }
       sk_sel = sk_maps.empty() ? -1 : 0;
       for (int i = 0; i < 8; ++i) {
         sk_slot[i].kind = i == 0 ? 1 : (i == 1 ? 2 : 0);
-        sk_slot[i].race = i % 4;
+        sk_slot[i].race = i % 4;  // Vorgabe: Reihenfolge des Rassenfelds
         sk_slot[i].team = i + 1;
       }
     }
@@ -2604,26 +2642,85 @@ struct Game::Impl {
       if (i >= n) continue;
       const SkSlot& sl = sk_slot[i];
       sv.state = 1;
-      sv.name = i == 0 ? "Spieler" : (sl.kind == 2 ? "Computer" : "Geschlossen");
-      sv.race = sl.kind == 0 ? std::string("-") : std::string(kSkRaces[sl.race]);
-      sv.team = "Team " + std::to_string(sl.team);
+      sv.name = i == 0 ? "Player" : (sl.kind == 2 ? Lbl("computer_medium", "Computer") : Lbl("empty", "Empty Slot"));
+      sv.race = sl.kind == 0 ? std::string() : Lbl(kSkRaceKeys[std::min(4, std::max(0, sl.race))], kSkRaceKeys[std::min(4, std::max(0, sl.race))]);
+      sv.team = Lbl(("team_" + std::to_string(sl.team)).c_str(), ("Team " + std::to_string(sl.team)).c_str());
     }
-    const int vis = 12;
+    for (const SkOptDef& d : SkOptDefs()) {
+      SkirmishOptionView ov;
+      ov.id = static_cast<int>(d.id);
+      ov.x = d.x; ov.y = d.y; ov.w = d.w; ov.h = d.h;
+      ov.text = SkOptText(labels, sk_set, d.id);
+      v.options.push_back(ov);
+    }
+    v.title = Lbl("title", "GAME SETUP");
+    v.col_name = Lbl("player_name", "Player Name");
+    v.col_side = Lbl("side", "Side");
+    v.col_team = Lbl("teams", "Teams");
+    v.col_game = Lbl("game_name", "Game Name");
+    v.label_messages = Lbl("messages", "Messages");
+    v.btn_prev = Lbl("previous_menu", "Previous Menu");
+    v.btn_launch = Lbl("launch", "LAUNCH");
+    v.btn_main = Lbl("main_menu", "Main Menu");
+    v.btn_select_map = Lbl("select_map", "SELECT MAP");
+    if (sk_sel >= 0) {
+      v.map_name = sk_maps[static_cast<size_t>(sk_sel)];
+      v.preview = "bzn/" + sk_maps[static_cast<size_t>(sk_sel)] + ".bmp";
+    }
+    if (sk_sel < 0) v.info = {"Im Spielordner fehlen Karten", "(bzn/*.bzn mit .mdf)."};
+    else
+      v.info = {"Karte: " + sk_maps[static_cast<size_t>(sk_sel)], "Spieler: " + std::to_string(n), "",
+                "Computer-Gegner: noch keine KI.", "Die meisten Optionen sind noch ohne Wirkung."};
+    // Kartenauswahl
+    const std::vector<int> fm = FilteredMaps();
     v.can_up = sk_first > 0;
-    v.can_down = sk_first + vis < static_cast<int>(sk_maps.size());
-    for (int k = 0; k < vis && sk_first + k < static_cast<int>(sk_maps.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(sk_first + k)]);
-    v.selected = sk_sel - sk_first >= 0 && sk_sel - sk_first < vis ? sk_sel - sk_first : -1;
-    v.title = sk_sel < 0 ? std::string("Keine Karten") : sk_maps[static_cast<size_t>(sk_sel)] + " - " + std::to_string(n) + " Spieler";
-    if (sk_sel >= 0) v.preview = "bzn/" + sk_maps[static_cast<size_t>(sk_sel)] + ".bmp";
-    v.res_label = std::string("Ressourcen: ") + kSkRes[sk_res];
-    if (sk_sel < 0) {
-      v.info = {"Im Spielordner fehlen Karten", "(bzn/*.bzn mit .mdf)."};
-    } else {
-      v.info = {"Karte: " + sk_maps[static_cast<size_t>(sk_sel)], "Startplaetze: " + std::to_string(n), "",
-                "Jeder aktive Platz startet mit Basis", "und einem Bauschiff (wie im Original).", "",
-                "Computer-Gegner stehen noch (keine KI).", "Ressourcen: noch ohne Wirkung."};
+    v.can_down = sk_first + 13 < static_cast<int>(fm.size());
+    for (int k = 0; k < 13 && sk_first + k < static_cast<int>(fm.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(fm[static_cast<size_t>(sk_first + k)])]);
+    v.selected = sk_pick - sk_first >= 0 && sk_pick - sk_first < 13 && sk_pick < static_cast<int>(fm.size()) ? sk_pick - sk_first : -1;
+    {
+      static const char* kF[8] = {"all_maps", "maximum_players_8", "maximum_players_7", "maximum_players_6", "maximum_players_5", "maximum_players_4", "maximum_players_3", "maximum_players_2"};
+      const int fi = sk_filter == 0 ? 0 : 9 - sk_filter;
+      v.filter_text = labels.Get("multiplayer_map_select", kF[std::min(7, std::max(0, fi))], kF[std::min(7, std::max(0, fi))]);
     }
+    v.btn_select = labels.Get("multiplayer_map_select", "select_map_button", "Select Map");
+    v.btn_cancel = labels.Get("multiplayer_map_select", "cancel_button", "Cancel");
     return v;
+  }
+
+  // Startobjekte (Armada.exe 0x442fd0): nur fuer Plaetze mit Spieler, deren Team in der Karte kein Objekt besitzt. Liste aus der Rassen-ODF nach "Standardeinheiten"
+  // (0 Karteneinheiten = nichts, 1 minimal, 2 Standard, 3 Super Side), Ort: Pfad Camera_<Team> oder Kartenmitte, dann Spirale (SkSpiralPlace).
+  void SkCreateStartUnits(const std::vector<char>& team_has_objects) {
+    const int mode = sk_set.v[kOptUnits];
+    if (mode == 0 || !odf_lib) return;
+    const int n = SkSlots();
+    for (int i = 0; i < n; ++i) {
+      const SkSlot& sl = sk_slot[i];
+      if (sl.kind == 0 || team_has_objects[static_cast<size_t>(i)]) continue;
+      int race = sl.race;
+      if (race >= 4) race = static_cast<int>(rng.U32() % 4u);  // Zufall
+      static const char* kRaceOdf[4] = {"fed", "borg", "rom", "kling"};
+      RaceDef rd;
+      if (!LoadRaceDef(*odf_lib, kRaceOdf[race], &rd)) continue;
+      // Startpunkt (Originalsystem, z wie in der Datei)
+      float cx = 0.5f * (map.bounds[0] + map.bounds[1]), cz = 0.5f * (map.bounds[4] + map.bounds[5]);
+      for (const BznPath& p : map.paths)
+        if (ToLowerAscii(p.name) == "camera_" + std::to_string(i + 1) && p.points.size() >= 3) { cx = p.points[0]; cz = p.points[2]; break; }
+      for (const std::string& u : SkStartUnits(rd, mode)) {
+        std::string odf = ToLowerAscii(u);
+        if (odf.size() > 4 && odf.compare(odf.size() - 4, 4, ".odf") == 0) odf.resize(odf.size() - 4);
+        float x = cx, z = cz;
+        SkSpiralPlace(cx, cz,
+                      [&](float px, float pz) {
+                        if (path_grid.Blocked(px, pz)) return false;
+                        for (const Spawned& o : spawned)
+                          if (Dist3(o.st.pos, std::array<float, 3>{px, 0.0f, -pz}.data()) < RadiusOf(o) + 60.0f) return false;
+                        return true;
+                      },
+                      &x, &z);
+        const float pos[3] = {x, 0.0f, -z};
+        SpawnAt(odf, sl.team, pos, false, false);
+      }
+    }
   }
 
   void SkStart() {
@@ -2635,18 +2732,23 @@ struct Game::Impl {
     if (idx < 0) return;
     LoadMap(idx);
     if (!map_loaded) return;
-    // Original (docs/formats/session-start.md, Stand der Pruefung dort): Das Original erzeugt keine Startobjekte; sie stehen in der Karte (BZN-Objekte mit Team N =
-    // Spieler N). Die Kamera startet auf dem Pfad "Camera_<Spielernummer>" (GameCamera-Start 0x4aaae0 -> 0x4791e0 -> 0x479250). Nicht geprueft sind: was mit den
-    // Objekten nicht belegter Plaetze geschieht, ob die Rasse des Platzes die Startobjekte ersetzt und wie Karten ohne Startobjekte (4first, 4nirvana) starten.
-    // Hier gilt deshalb nur, was belegt ist: die Objekte bleiben wie in der Karte, nur das Team wird auf den Bund des Platzes abgebildet.
+    // Original (docs/formats/session-start.md): Startobjekte stehen in der Karte (BZN-Objekte mit Team N = Spieler N); Teams ohne Kartenobjekte bekommen die
+    // Startliste ihrer Rasse (SkCreateStartUnits). Die Kamera startet auf dem Pfad "Camera_<Spielernummer>". Nicht geprueft: Objekte nicht belegter Plaetze, ob
+    // die Rasse des Platzes Startobjekte der Karte ersetzt.
     selected = -1;
     const int n = SkSlots();
+    std::vector<char> has_objects(static_cast<size_t>(n), 0);
     int owned = 0;
+    for (Spawned& o : spawned) {
+      if (o.team < 1 || o.team > n) continue;
+      has_objects[static_cast<size_t>(o.team - 1)] = 1;
+    }
     for (Spawned& o : spawned) {
       if (o.team < 1 || o.team > n || sk_slot[o.team - 1].kind == 0) continue;
       o.team = sk_slot[o.team - 1].team;
       ++owned;
     }
+    SkCreateStartUnits(has_objects);
     auto camera = [&](int player, float out[3]) {
       for (const BznPath& p : map.paths) {
         if (ToLowerAscii(p.name) != "camera_" + std::to_string(player) || p.points.size() < 3) continue;
@@ -2655,18 +2757,18 @@ struct Game::Impl {
       }
       return false;
     };
-    for (int i = 0; i < n; ++i) {
-      const SkSlot& sl = sk_slot[i];
-      if (sl.kind == 0 || i != 0) continue;
+    {
+      const SkSlot& sl = sk_slot[0];
       float c[3] = {0, 0, 0};
-      hud_race = sl.race;
+      static const int kHud[5] = {0, 3, 2, 1, 0};  // Rasse des Auswahlfelds (federation, borg, romulan, klingon, random) -> HudRace (Federation, Klingon, Romulan, Borg)
+      hud_race = kHud[std::min(4, std::max(0, sl.race))];
       human_team = sl.team;
       LoadHud();
-      if (camera(i + 1, c)) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
+      if (camera(1, c)) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
       map_dist = 2200.0f;
       zoom = 1.0f;
     }
-    if (owned == 0) Message("Diese Karte enthaelt keine Startobjekte; der Start im Original ist noch nicht untersucht.");
+    if (owned == 0 && spawned.empty()) Message("Diese Karte hat keine Startobjekte; mit \"Karteneinheiten\" startet auch das Original ohne Einheiten.");
     in_game = true;
     Message("Skirmish: " + sk_maps[static_cast<size_t>(sk_sel)]);
   }
@@ -2678,20 +2780,36 @@ struct Game::Impl {
     else if (id == "back") shell_screen = shell_screen == ShellScreen::Skirmish ? ShellScreen::Multi : ShellScreen::Main;
     else if (id == "skirmish") SkEnter();
     else if (id == "start") SkStart();
-    else if (id == "quit") {
+    else if (id == "select_map") {
+      sk_pick = -1;
+      sk_first = 0;
+      shell_screen = ShellScreen::SkirmishMap;
+    } else if (id == "mapsel_cancel") shell_screen = ShellScreen::Skirmish;
+    else if (id == "mapsel_ok") {
+      const std::vector<int> fm = FilteredMaps();
+      if (sk_pick >= 0 && sk_pick < static_cast<int>(fm.size())) {
+        sk_sel = fm[static_cast<size_t>(sk_pick)];
+        SkLoadMapInfo();
+      }
+      shell_screen = ShellScreen::Skirmish;
+    } else if (id == "mapsel_up") sk_first = std::max(0, sk_first - 6);
+    else if (id == "mapsel_down") sk_first = std::min(std::max(0, static_cast<int>(FilteredMaps().size()) - 13), sk_first + 6);
+    else if (id == "mapsel_filter") {
+      sk_filter = sk_filter == 0 ? 8 : (sk_filter == 2 ? 0 : sk_filter - 1);
+      sk_pick = -1;
+      sk_first = 0;
+    } else if (id.compare(0, 7, "mapsel:") == 0) sk_pick = sk_first + std::atoi(id.c_str() + 7);
+    else if (id.compare(0, 4, "opt:") == 0) {
+      const int o = std::atoi(id.c_str() + 4);
+      if (o >= 0 && o < kOptCount) SkOptCycle(&sk_set, static_cast<SkOpt>(o));
+    } else if (id == "quit") {
       if (host) host->RequestQuit();
-    } else if (id == "map_up") sk_first = std::max(0, sk_first - 6);
-    else if (id == "map_down") sk_first = std::min(std::max(0, static_cast<int>(sk_maps.size()) - 12), sk_first + 6);
-    else if (id == "res") sk_res = (sk_res + 1) % 3;
-    else if (id.compare(0, 4, "map:") == 0) {
-      sk_sel = sk_first + std::atoi(id.c_str() + 4);
-      SkLoadMapInfo();
     } else if (id.compare(0, 10, "slot_name:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i > 0 && i < 8) sk_slot[i].kind = sk_slot[i].kind == 2 ? 0 : 2;
     } else if (id.compare(0, 10, "slot_race:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
-      if (i >= 0 && i < 8) sk_slot[i].race = (sk_slot[i].race + 1) % 4;
+      if (i >= 0 && i < 8) sk_slot[i].race = (sk_slot[i].race + 1) % 5;
     } else if (id.compare(0, 10, "slot_team:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i >= 0 && i < 8) sk_slot[i].team = sk_slot[i].team % 8 + 1;
@@ -3122,7 +3240,7 @@ void Game::OnFrame(double dt) {
   glClearDepthf(1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   if (!s.in_game) {  // Hauptmenue
-    const SkirmishView skv = s.shell_screen == ShellScreen::Skirmish ? s.SkView() : SkirmishView();
+    const SkirmishView skv = (s.shell_screen == ShellScreen::Skirmish || s.shell_screen == ShellScreen::SkirmishMap) ? s.SkView() : SkirmishView();
     s.shell = BuildShell(s.shell_screen, s.width, s.height, s.shell_pressed, s.hud_ok ? &s.hud_data : nullptr, &skv);
     if (s.source) s.hud_gl.Draw(s.shell.draws, *s.source, s.width, s.height);
     return;

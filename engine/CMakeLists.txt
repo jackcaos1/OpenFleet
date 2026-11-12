@@ -9,6 +9,7 @@ add_library(fleet_core STATIC
   src/io/ZipSource.cpp
   src/formats/Tga.cpp
   src/formats/Bmp.cpp
+  src/formats/LabelMap.cpp
   src/formats/Zfs.cpp
   src/formats/Odf.cpp
   src/formats/Spr.cpp
@@ -29,6 +30,7 @@ add_library(fleet_core STATIC
   src/game/Combat.cpp
   src/game/Shockwave.cpp
   src/game/Boarding.cpp
+  src/game/Skirmish.cpp
   src/game/Shell.cpp
   src/game/MenuLayout.cpp
   src/formats/GuiCfg.cpp

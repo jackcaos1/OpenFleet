@@ -12,7 +12,7 @@
 namespace fleet {
 
 // Single = Einzelspieler (Voelkerportraets, Load Game), Multi = "Multiplayer Connection", Skirmish = "Game Setup" (Instant Action, erreichbar ueber Multiplayer)
-enum class ShellScreen { Main, Single, Multi, Skirmish };
+enum class ShellScreen { Main, Single, Multi, Skirmish, SkirmishMap };
 
 struct ShellButton {
   std::string id;  // "single", "multi", "replay", "credits", "options", "quit", "skirmish", "campaign", "back" ...
@@ -25,20 +25,30 @@ struct ShellLayout {
   std::vector<ShellButton> buttons;
 };
 
-// Anzeigedaten des Skirmish-Einstellungsbildschirms (bitmaps/multiset/mpsBG.bmp, Felder an den Originalpositionen).
+// Anzeigedaten des Spiel-Einrichtungsbildschirms (bitmaps/multiset/mpsBG.bmp; Rechtecke aus dem Aufbaucode des Originals, docs/formats/shell-setup.md).
 struct SkirmishSlotView {
   int state = 0;  // 0 nicht vorhanden (Karte hat zu wenige Startplaetze), 1 aktiv
   std::string name, race, team;
 };
+struct SkirmishOptionView {
+  int id = 0;  // Index der Option (game/Skirmish.h), Aktions-ID "opt:<id>"
+  float x = 0, y = 0, w = 0, h = 0;
+  std::string text;
+  bool enabled = true;
+};
 struct SkirmishView {
   SkirmishSlotView slot[8];
-  std::vector<std::string> maps;  // sichtbarer Ausschnitt der Kartenliste (bis 12)
-  int selected = -1;              // Index im Ausschnitt, -1 = keiner sichtbar
+  std::vector<SkirmishOptionView> options;
+  std::string title, col_name, col_side, col_team, col_game, label_messages;
+  std::string map_name;                  // Kartenname unter der Vorschau
+  std::string preview;                   // Textur der Kartenvorschau ("" = keine)
+  std::string btn_prev, btn_launch, btn_main, btn_select_map;
+  std::vector<std::string> info;         // Textzeilen im Meldungsfeld links unten
+  // Kartenauswahl (ShellScreen::SkirmishMap)
+  std::vector<std::string> maps;         // sichtbarer Ausschnitt (bis 13)
+  int selected = -1;                     // Index im Ausschnitt
   bool can_up = false, can_down = false;
-  std::string title;              // Zeile oben rechts
-  std::string preview;            // Textur der Kartenvorschau ("" = keine)
-  std::vector<std::string> info;  // Textzeilen im grossen schwarzen Feld links unten
-  std::string res_label;
+  std::string filter_text, btn_select, btn_cancel;
 };
 
 // pressed = id der gerade gedrueckten Taste (gelb). font darf nullptr sein (dann ohne Beschriftung der Platten).

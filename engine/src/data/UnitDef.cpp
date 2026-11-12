@@ -126,6 +126,13 @@ bool LoadRaceDef(OdfLibrary& lib, const std::string& race, RaceDef* out) {
   o->GetFloat("weaponYellow", &out->weapon_yellow);
   o->GetFloat("weaponRed", &out->weapon_red);
   o->GetFloat("boardingStrength", &out->boarding_strength);
+  const struct { const char* key; std::vector<std::string>* list; } kLists[3] = {
+      {"minimalUnits", &out->minimal_units}, {"standardUnits", &out->standard_units}, {"superUnits", &out->super_units}};
+  for (const auto& l : kLists)
+    for (int i = 1; i <= 9; ++i) {
+      std::string v;
+      if (o->GetString(std::string(l.key) + std::to_string(i), &v) && !v.empty()) l.list->push_back(v);
+    }
   return true;
 }
 

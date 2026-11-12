@@ -17,6 +17,8 @@ struct Shot {
   float dir[3] = {0, 0, 1};
   float age = 0, life = 1;
   float speed = 0;   // Einheiten pro Sekunde (Demo-Massstab, siehe kDemoSpeedScale)
+  unsigned owner = 0;       // Objekt-Kennung: die Position (local) liegt im Modellraum dieses Schiffs und folgt ihm (Sterbeeffekte)
+  float local[3] = {0, 0, 0};
   float length = 0;  // Beam/Bolt
   float width = 1;   // Breite bzw. Durchmesser
   const SprSprite* sprite = nullptr;

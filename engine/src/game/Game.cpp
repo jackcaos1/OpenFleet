@@ -34,6 +34,7 @@
 #include "render/ModelRenderer.h"
 #include "render/SpriteRenderer.h"
 #include "game/Combat.h"
+#include "game/Shockwave.h"
 #include "game/Shell.h"
 #include "game/FireDemo.h"
 #include "render/EffectRenderer.h"
@@ -77,6 +78,20 @@ struct Touch {
   float pivot[3] = {0, 0, 0};  // Drehpunkt der Geste in der Karte: Bodenpunkt unter dem Finger bei Beginn
 };
 
+}  // namespace
+
+namespace {
+// Drehung um eine Einheitsachse (Rodrigues), Spaltenanordnung wie Mat4.
+Mat4 AxisAngle(const float a[3], float angle) {
+  const float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+  Mat4 r;
+  r.m[0] = t * a[0] * a[0] + c;         r.m[4] = t * a[0] * a[1] - s * a[2];  r.m[8] = t * a[0] * a[2] + s * a[1];
+  r.m[1] = t * a[0] * a[1] + s * a[2];  r.m[5] = t * a[1] * a[1] + c;         r.m[9] = t * a[1] * a[2] - s * a[0];
+  r.m[2] = t * a[0] * a[2] - s * a[1];  r.m[6] = t * a[1] * a[2] + s * a[0];  r.m[10] = t * a[2] * a[2] + c;
+  return r;
+}
+// Original: 0,01 rad je Bild; mit 30 Bildern/s (Annahme, wie bei den Nebel-Lichtern) = 0,3 rad/s
+constexpr float kFireballSpin = 0.3f;
 }  // namespace
 
 struct Game::Impl {
@@ -308,6 +323,9 @@ struct Game::Impl {
     bool movable = false;
     int officers = 0;
     bool derelict = false;
+    bool hero = false;   // ODF isHero
+    bool dying = false;  // zerstoert: Sterbephase laeuft (Combat.h, Dying), danach wird das Objekt entfernt
+    Dying die;
     unsigned beam_id = 0;  // Transporter: Ziel, zu dem Besatzung gebeamt wird
     float beam_timer = 0;
     unsigned attacker_id = 0;
@@ -316,6 +334,9 @@ struct Game::Impl {
     float anchor[3] = {0, 0, 0};
     float scan = 500, scan_damaged = 125;
     std::string expl_sound;
+    std::string expl_model = "xplode";  // dbName der fireball-ODF
+    bool has_shock = false;
+    ShockwaveDef shock;  // Schockwelle der fireball-ODF (grosse Schiffe)
     float expl_len = 2.5f;
     bool has_energy = false;
     std::string cls;  // Klassenbezeichnung fuer das Schiffsfeld
@@ -329,6 +350,7 @@ struct Game::Impl {
     float radius = 50;
     float bounds[6] = {0, 0, 0, 0, 0, 0};   // Bounding-Box (GL: min xyz, max xyz), ungeskaliert
     std::vector<ModelHardpoint> hardpoints;
+    std::vector<float> tris;  // Dreiecke des Modells (je 9 Werte, Modellraum GL), Ort der Sterbeeffekte
   };
   struct SpawnEntry {
     std::string odf, label, race;
@@ -346,6 +368,22 @@ struct Game::Impl {
   mutable float mm_extent = 0;
   std::vector<Projectile> projectiles;
   std::vector<Shot> fx;  // Strahlen und Explosionen (Geschosse stehen in projectiles)
+  // Endexplosion eines Schiffs: das Sprite-Modell der fireball-ODF (dbName, z. B. Xplode.sod), Animation ab Alter 0
+  struct Fireball {
+    std::string model;
+    float pos[3] = {0, 0, 0};
+    float scale = 1, age = 0, life = 2.5f;
+    float axis[3] = {0, 1, 0};   // zufaellige Drehachse (Original 0x51b290: 0,01 rad je Bild um eine Zufallsachse)
+    float radius = 0;            // Radius des zerstoerten Schiffs (Objektmassstab der Schockwelle)
+    bool shock_pending = false;  // Schockwelle noch nicht erzeugt
+    ShockwaveDef shock;
+  };
+  std::vector<Fireball> fireballs;
+  struct ShockInst {
+    ShockwaveDef def;
+    Shockwave sw;
+  };
+  std::vector<ShockInst> shockwaves;
   Rng rng;
   unsigned next_id = 1;
   // Hauptmenue vor dem Spiel
@@ -391,6 +429,8 @@ struct Game::Impl {
     spawned.clear();
     projectiles.clear();
     fx.clear();
+    fireballs.clear();
+    shockwaves.clear();
     spawn_models.clear();
     scene_hidden.clear();
     map_radius.clear();
@@ -1235,6 +1275,12 @@ struct Game::Impl {
     sm.radius = std::max(1.0f, 0.5f * std::sqrt(r2));
     for (int k = 0; k < 3; ++k) { sm.bounds[k] = ob.mn[k]; sm.bounds[k + 3] = ob.mx[k]; }
     sm.hardpoints = built.hardpoints;
+    for (const ModelBatch& b : built.batches)
+      for (size_t i = 0; i + 2 < b.indices.size(); i += 3)
+        for (int c = 0; c < 3; ++c) {
+          const float* v = &b.vertices[static_cast<size_t>(b.indices[i + static_cast<size_t>(c)]) * 8];
+          sm.tris.insert(sm.tris.end(), v, v + 3);
+        }
     std::unique_ptr<SpriteRenderer> sp(new SpriteRenderer());
     if (sp->Init() && sp->SetNodes(built, spr, *source) > 0) sm.sp = std::move(sp);
     return true;
@@ -1248,6 +1294,7 @@ struct Game::Impl {
     if (!u.unit_name.empty()) s->label = u.unit_name;
     s->officers = u.officer_cost;
     s->has_energy = u.max_special_energy > 0;
+    s->hero = u.is_hero;
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
     s->odf_l = ToLowerAscii(odf);
     {
@@ -1277,6 +1324,8 @@ struct Game::Impl {
         std::string sv;
         if (fo->GetString("explSound", &sv)) s->expl_sound = sv;
         fo->GetFloat("length", &s->expl_len);
+        if (fo->GetString("dbName", &sv) && !sv.empty()) s->expl_model = ToLowerAscii(sv);
+        s->has_shock = LoadShockwaveDef(*odf_lib, u.fireball, &s->shock);
       }
     }
     auto sm_it = spawn_models.find(s->sod);
@@ -1547,8 +1596,7 @@ struct Game::Impl {
     s.target_id = 0;
     s.beam_id = 0;
     s.auto_move = 0;
-    s.sel = false;
-    StopShip(&s.st);
+    StopShip(&s.st);  // Auswahl bleibt: im Original ist ein Schiff bis zur Zerstoerung waehlbar (docs/formats/ship-health.md)
     Message(s.label + " hat keine Besatzung mehr und treibt fuehrerlos.");
   }
 
@@ -1632,7 +1680,6 @@ struct Game::Impl {
       StepHealth(&s.hp, dt);
       s.attacked_t = std::max(0.0f, s.attacked_t - dt);
       if (s.hp.derelict() && !s.derelict) MakeDerelict(s);
-      if (s.derelict) s.st.yaw += 0.7f * dt;  // trudelt auf der Stelle
       if (s.beam_id) {
         s.beam_timer -= dt;
         if (s.beam_timer <= 0) {
@@ -1815,18 +1862,110 @@ struct Game::Impl {
       for (int k = 0; k < 3; ++k) p.vis.pos[k] += p.vis.dir[k] * p.vis.speed * dt;
     }
     projectiles.erase(std::remove_if(projectiles.begin(), projectiles.end(), [](const Projectile& p) { return p.vis.age >= p.vis.life; }), projectiles.end());
-    for (Shot& sh : fx) sh.age += dt;
+    for (Shot& sh : fx) {
+      sh.age += dt;
+      if (sh.owner == 0) continue;  // Sterbeeffekte folgen dem Schiff (Original: Position im Modellraum des Besitzers)
+      const int oi = FindById(sh.owner);
+      if (oi < 0) continue;
+      Mat4 m, r;
+      ShipMatrices(spawned[static_cast<size_t>(oi)].st, spawned[static_cast<size_t>(oi)].scale, &m, &r);
+      Xf(m, sh.local, sh.pos);
+    }
+    for (Fireball& f : fireballs) {
+      f.age += dt;
+      if (f.shock_pending && f.age > f.shock.delay) {
+        f.shock_pending = false;
+        ShockInst w;
+        w.def = f.shock;
+        for (int k = 0; k < 3; ++k) w.sw.pos[k] = f.pos[k];
+        w.sw.scale = f.radius;
+        shockwaves.push_back(w);
+      }
+    }
+    for (ShockInst& w : shockwaves) {
+      w.sw.age += dt;
+      for (Spawned& t : spawned) {  // Original 0x51d2a0: Schaden an Objekten im Radius, nicht an bereits zerstoerten
+        if (!t.hp.alive()) continue;
+        HitInfo hi;
+        if (ShockwaveHit(w.def, w.sw, Dist3(t.st.pos, w.sw.pos), t.odf, rng.F01(), dt, &hi)) HitShip(t, 0, hi);
+      }
+    }
+    shockwaves.erase(std::remove_if(shockwaves.begin(), shockwaves.end(), [](const ShockInst& w) { return ShockwaveDone(w.def, w.sw); }), shockwaves.end());
+    fireballs.erase(std::remove_if(fireballs.begin(), fireballs.end(), [](const Fireball& f) { return f.age >= f.life; }), fireballs.end());
     fx.erase(std::remove_if(fx.begin(), fx.end(), [](const Shot& sh) { return sh.age >= sh.life; }), fx.end());
-    // Zerstoerte Objekte: Explosion (Sprite statt Xplode-Modell, Ton und Dauer aus der fireball-ODF), entfernen
-    bool any_dead = false;
-    for (const Spawned& s : spawned) any_dead = any_dead || !s.hp.alive();
-    if (any_dead) {
-      const SprSprite* ex = spr.FindSprite("bigorange");
-      for (const Spawned& s : spawned) {
-        if (s.hp.alive()) continue;
+    // Zerstoerte Objekte (Original Craft::Explode/Update, docs/formats/ship-health.md): Auswahl endet sofort, das Schiff fliegt weiter
+    // (Antrieb gilt als aus, der Drehimpuls bleibt), alle 0,05 s ein kleiner Effekt (systemexpl1..6), nach ~3 s die grosse Explosion
+    // (hier Sprite "bigorange" statt Xplode-Modell, Ton und Dauer aus der fireball-ODF) und Entfernen.
+    // Annahmen: Feld +0x60 = Radius, Effektgroesse in Weltenheiten.
+    bool sel_changed = false, any_gone = false;
+    for (Spawned& s : spawned) {
+      if (s.hp.alive()) continue;
+      if (!s.dying) {
+        s.dying = true;
+        s.die = MakeDying(std::sqrt(s.st.vel[0] * s.st.vel[0] + s.st.vel[1] * s.st.vel[1] + s.st.vel[2] * s.st.vel[2]), s.hero);
+        s.target_id = 0;
+        s.beam_id = 0;
+        s.auto_move = 0;
+        if (s.sel || s.id == sel_id) sel_changed = true;
+        s.sel = false;
         Message(s.label + " zerstoert.");
-        if (!s.expl_sound.empty()) PlayEffect(s.expl_sound, 0.6f);
-        if (!ex) continue;
+      }
+      bool done = false;
+      const int puffs = StepDying(&s.die, dt, &done);
+      for (int k = 0; k < puffs; ++k) {
+        // Original (0x466320/0x466180): zufaelliger Effekt systemexpl1..7 an einem zufaelligen Eckpunkt eines zufaelligen Dreiecks
+        const SprSprite* sx = spr.FindSprite(std::string("systemexpl") + static_cast<char>('1' + static_cast<int>(rng.F01() * kDyingFxKinds) % kDyingFxKinds));
+        if (!sx) break;
+        Shot e;
+        e.kind = Shot::Kind::Ball;
+        e.sprite = sx;
+        e.anim = sx->anim.empty() ? nullptr : spr.FindAnimation(sx->anim);
+        e.width = DyingFxSize(RadiusOf(s));  // halbe Kantenlaenge in Welteinheiten (0x5975e0: Mitte +- Groesse)
+        e.life = 1.0f;                       // Lebensdauer im Original: letzter Parameter von 0x515e30
+        e.owner = s.id;
+        for (int c = 0; c < 3; ++c) e.pos[c] = s.st.pos[c];
+        auto sm_it = spawn_models.find(s.sod);
+        if (sm_it != spawn_models.end() && !sm_it->second.tris.empty()) {
+          const std::vector<float>& tr = sm_it->second.tris;
+          const size_t ntri = tr.size() / 9;
+          const size_t t = std::min(ntri - 1, static_cast<size_t>(rng.F01() * static_cast<float>(ntri)));
+          const size_t v = std::min<size_t>(2, static_cast<size_t>(rng.F01() * 3.0f));
+          for (int c = 0; c < 3; ++c) e.local[c] = tr[t * 9 + v * 3 + static_cast<size_t>(c)];
+          Mat4 m, r;
+          ShipMatrices(s.st, s.scale, &m, &r);
+          Xf(m, e.local, e.pos);
+        }
+        fx.push_back(e);
+      }
+      if (!done) continue;
+      any_gone = true;
+      if (!s.expl_sound.empty()) PlayEffect(s.expl_sound, 0.6f);
+      // Original: das fireball-Objekt (Modell dbName, hier Xplode.sod aus acht Sprite-Knoten); das Modell wird mit Faktor 1,0 geladen,
+      // der Objektmassstab (Schiffsradius) bestimmt nur die Schockwelle (0x51b290/0x51b330)
+      bool fireball_ok = false;
+      if (EnsureSpawnModel(s.expl_model) && spawn_models[s.expl_model].sp) {
+        Fireball f;
+        f.model = s.expl_model;
+        for (int k = 0; k < 3; ++k) f.pos[k] = s.st.pos[k];
+        f.scale = 1.0f;
+        f.life = std::max(1.5f, s.expl_len);
+        // Original (0x51b330): nach shockwaveDelay, nur wenn der Objektmassstab (Schiffsradius) ueber shockwaveMinimum liegt
+        f.radius = RadiusOf(s);
+        {
+          float v[3], l2;
+          do {
+            for (float& c : v) c = rng.F01() * 2.0f - 1.0f;
+            l2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+          } while (l2 > 1.0f || l2 < 1e-4f);
+          const float inv = 1.0f / std::sqrt(l2);
+          for (int c = 0; c < 3; ++c) f.axis[c] = v[c] * inv;
+        }
+        f.shock_pending = s.has_shock && RadiusOf(s) > s.shock.minimum;
+        f.shock = s.shock;
+        fireballs.push_back(f);
+        fireball_ok = true;
+      }
+      if (const SprSprite* ex = fireball_ok ? nullptr : spr.FindSprite("bigorange")) {
         Shot e;
         e.kind = Shot::Kind::Ball;
         e.sprite = ex;
@@ -1836,8 +1975,17 @@ struct Game::Impl {
         for (int k = 0; k < 3; ++k) e.pos[k] = s.st.pos[k];
         fx.push_back(e);
       }
-      for (const Spawned& s : spawned) if (!s.hp.alive()) UnstampStation(s);
-      spawned.erase(std::remove_if(spawned.begin(), spawned.end(), [](const Spawned& s) { return !s.hp.alive(); }), spawned.end());
+    }
+    if (any_gone) {
+      const auto gone = [](const Spawned& s) { return s.dying && s.die.left <= 0; };
+      for (const Spawned& s : spawned) if (gone(s)) UnstampStation(s);
+      spawned.erase(std::remove_if(spawned.begin(), spawned.end(), gone), spawned.end());
+    }
+    if (sel_changed) {  // Hauptobjekt war betroffen: naechstes ausgewaehltes Objekt uebernehmen
+      selected = -1;
+      for (size_t i = 0; i < spawned.size() && selected < 0; ++i)
+        if (spawned[i].sel) selected = static_cast<int>(i);
+    } else if (any_gone) {
       selected = FindById(sel_id);
     }
   }
@@ -1945,6 +2093,7 @@ struct Game::Impl {
     float bt = 1e30f;
     for (size_t i = 0; i < spawned.size(); ++i) {
       const Spawned& s = spawned[i];
+      if (!s.hp.alive()) continue;  // zerstoert: nicht mehr waehlbar (Original: Auswahl endet bei Explode)
       auto it = spawn_models.find(s.sod);
       float t;
       if (hit(s.st.pos, it != spawn_models.end() ? it->second.radius * s.scale : 10.0f, &t) && t < bt) {
@@ -2992,6 +3141,17 @@ void Game::OnFrame(double dt) {
       it->second.r->SetTeamColor(c[0], c[1], c[2]);
       it->second.r->Draw(proj * view * m, rot * r, &m);
       if (it->second.sp) it->second.sp->Draw(proj, view * m, s.clock);
+    }
+    for (const Impl::Fireball& f : s.fireballs) {
+      auto it = s.spawn_models.find(f.model);
+      if (it != s.spawn_models.end() && it->second.sp) it->second.sp->Draw(proj, view * Mat4::Translation(f.pos[0], f.pos[1], f.pos[2]) * AxisAngle(f.axis, kFireballSpin * f.age), f.age, f.scale);
+    }
+    if (s.source) {
+      std::vector<float> mesh;
+      for (const Impl::ShockInst& w : s.shockwaves) {
+        BuildShockwaveMesh(w.def, w.sw, &mesh);
+        s.effects.DrawMesh(proj, view * Mat4::Translation(w.sw.pos[0], w.sw.pos[1], w.sw.pos[2]), mesh, w.def.texture, w.def.colour, ShockwaveFade(w.def, w.sw), *s.source);
+      }
     }
     if (s.source && (!s.fx.empty() || !s.projectiles.empty())) {
       std::vector<Shot> shots = s.fx;

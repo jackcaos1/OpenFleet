@@ -22,7 +22,7 @@
 #include "game/Ui.h"
 #include "game/Hud.h"
 #include "game/Combat.h"
-#include "game/Combat.h"
+#include "game/Shockwave.h"
 #include "game/ShipSim.h"
 #include "game/HoverSim.h"
 #include "game/HoverShip.h"
@@ -789,6 +789,64 @@ void TestZip() {
   CHECK(!InflateRaw(bad, 3, out, 4));
 }
 
+void TestShockwave() {
+  using namespace fleet;
+  ShockwaveDef d;
+  d.rate = 110;
+  d.radius_factor = 10;
+  d.fade_factor = 0.3f;
+  d.rays = 16;
+  Shockwave s;
+  s.scale = 50;  // Maximum 500
+  s.age = 1.0f;  // aussen 220
+  CHECK(ShockwaveOuterRadius(d, s) == 220.0f && ShockwaveMaxRadius(d, s) == 500.0f);
+  CHECK(!ShockwaveDone(d, s) && std::fabs(ShockwaveFade(d, s) - 0.8f) < 1e-4f);  // 220 > 150: (500-220)/350
+  s.age = 0.5f;
+  CHECK(ShockwaveFade(d, s) == 1.0f);  // aussen 110 < 150
+  s.age = 5.0f;
+  CHECK(ShockwaveDone(d, s) && ShockwaveFade(d, s) == 0.0f);
+  s.age = 1.0f;
+  std::vector<float> mesh;
+  BuildShockwaveMesh(d, s, &mesh);
+  CHECK(mesh.size() == 16u * 3u * 6u * 5u);
+  CHECK(Near(mesh[0], 0.0f) && Near(mesh[1], 0.0f) && Near(mesh[2], 220.0f) && mesh[3] == 0.0f && mesh[4] == 1.0f);  // Strahl 0, Eckpunkt 1: aussen
+  bool in_range = true;
+  for (size_t i = 0; i < mesh.size(); i += 5) in_range = in_range && mesh[i + 1] >= -2.0f && mesh[i + 1] <= 2.0f && std::fabs(mesh[i + 2]) <= 220.01f;
+  CHECK(in_range);
+  // Schaden: ohne damageBase keiner; mit Wert (base + Zufall x Varianz) x (1 - d/R) x dt, Ausnahme je Zielart
+  HitInfo hit;
+  CHECK(!ShockwaveHit(d, s, 10.0f, "zbattle", 0.5f, 0.1f, &hit));
+  d.damage_base.base = 380;
+  d.damage_base.overrides.emplace_back("zmama.odf", 2.0f);
+  d.damage_variance.base = 10;
+  d.damage_threshold.base = 605;
+  d.hull_crew_modifier.base = 0.05f;
+  s.age = 1.0f;  // R = 220
+  CHECK(ShockwaveHit(d, s, 110.0f, "zbattle", 0.5f, 0.1f, &hit));
+  CHECK(std::fabs(hit.damage - (380.0f + 5.0f) * 0.5f * 0.1f) < 1e-3f && hit.threshold == 605.0f && std::fabs(hit.hull_crew_mod - 0.05f) < 1e-6f);
+  CHECK(ShockwaveHit(d, s, 110.0f, "zmama", 0.0f, 1.0f, &hit) && std::fabs(hit.damage - 2.0f * 0.5f) < 1e-3f);
+  CHECK(!ShockwaveHit(d, s, 230.0f, "zbattle", 0.5f, 0.1f, &hit));  // ausserhalb des Radius
+}
+
+void TestDying() {
+  using namespace fleet;
+  Dying d;
+  bool done = false;
+  int fx = 0;
+  float t = 0;
+  while (!done && t < 10.0f) {  // ~3 s in 0,1-s-Schritten: etwa 60 Effekte (alle 0,05 s), dann fertig
+    fx += StepDying(&d, 0.1f, &done);
+    t += 0.1f;
+  }
+  CHECK(done && t > 2.9f && t < 3.2f);  // Standarddauer 3 s
+  CHECK(fx >= 58 && fx <= 63);
+  CHECK(MakeDying(0.5f, false).left == 3.0f && MakeDying(0.5f, true).left == 5.0f && MakeDying(20.0f, false).left == 5.0f);
+  CHECK(DyingFxSize(10.0f) == 4.0f && DyingFxSize(100.0f) > 13.9f && DyingFxSize(100.0f) < 14.1f);
+  bool done2 = false;
+  Dying e;
+  CHECK(StepDying(&e, 0.01f, &done2) == 0 && !done2);  // unter 0,05 s noch kein Effekt
+}
+
 void TestCombat() {
   using namespace fleet;
   Health h;
@@ -1360,6 +1418,8 @@ int main() {
   TestHud();
   TestShipSim();
   TestCombat();
+  TestDying();
+  TestShockwave();
   TestZip();
   std::printf("%d Pruefungen, %d Fehler\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -97,6 +97,26 @@ void StepHealth(Health* h, float dt) {
   }
 }
 
+Dying MakeDying(float speed, bool hero) {
+  Dying d;
+  d.left = (speed > 1.0f || hero) ? 5.0f : 3.0f;
+  return d;
+}
+
+float DyingFxSize(float radius) { return std::max(0.14f * radius, 4.0f); }
+
+int StepDying(Dying* d, float dt, bool* done) {
+  d->left -= dt;
+  d->acc += dt;
+  int n = 0;
+  while (d->acc >= kDyingFxStep) {  // wie 0x466320: je angesammelte 0,05 s ein Effekt
+    d->acc -= kDyingFxStep;
+    ++n;
+  }
+  *done = d->left <= 0;
+  return n;
+}
+
 float RollDamage(Rng* r, float base, float variance) {
   const float v = variance > 0 ? (r->F01() * 2.0f - 1.0f) * variance : 0.0f;
   return std::max(0.0f, base + v);

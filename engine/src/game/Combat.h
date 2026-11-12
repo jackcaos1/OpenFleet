@@ -82,6 +82,22 @@ int ApplyHit(Health* h, Rng* r, const HitInfo& hit);
 // Schildaufladung, Lebenserhaltung (Besatzung stirbt), Reparatur.
 void StepHealth(Health* h, float dt);
 
+// Sterbephase eines zerstoerten Schiffs (Original: Craft-Update 0x465cc0, Handler 0x466090/0x466320, docs/formats/ship-health.md).
+// Das Schiff fliegt weiter, solange der Zaehler laeuft; alle kDyingFxStep Sekunden entsteht ein kleiner Explosionseffekt, am Ende die
+// grosse Explosion und das Entfernen. Dauer im Original 3 s (5 s je nach Groesse/Klassenflag, Bedeutung offen).
+constexpr float kDyingFxStep = 0.05f;
+constexpr int kDyingFxKinds = 7;  // systemexpl1..7
+struct Dying {
+  float left = 3.0f;
+  float acc = 0;
+};
+// Original (0x466090): Geschwindigkeit ueber 1,0 -> 5 s, sonst 5 s fuer Helden (isHero) und 3 s fuer alle anderen.
+Dying MakeDying(float speed, bool hero);
+// Skalierung eines kleinen Explosionseffekts: max(0,14 x Feld +0x60, 4,0); Feld +0x60 = Radius (Annahme), Einheit unbekannt.
+float DyingFxSize(float radius);
+// Rueckgabe: Anzahl der in diesem Schritt zu erzeugenden Effekte; *done wird true, sobald der Zaehler abgelaufen ist.
+int StepDying(Dying* d, float dt, bool* done);
+
 // Besatzung aendern (Prozent der Maximalbesatzung bzw. absolut), nie unter 0 / ueber crew_max.
 void LoseCrewPercent(Health* h, float percent);
 

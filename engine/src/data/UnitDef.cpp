@@ -25,6 +25,8 @@ std::string Num(float v) {
   return b;
 }
 
+}  // namespace
+
 bool ReadPerTarget(const OdfObject& o, const char* key, PerTarget* out) {
   const OdfEntry* e = o.Find(key);
   if (!e || e->values.empty()) return false;
@@ -40,8 +42,6 @@ bool ReadPerTarget(const OdfObject& o, const char* key, PerTarget* out) {
   }
   return true;
 }
-
-}  // namespace
 
 float PerTarget::For(const std::string& target_odf) const {
   std::string t = ToLowerAscii(target_odf);
@@ -80,6 +80,7 @@ bool LoadUnitDef(OdfLibrary& lib, const std::string& name, UnitDef* out, std::st
   o->GetFloat("damagedScan", &out->damaged_scan);
   o->GetFloat("attackPower", &out->attack_power);
   o->GetBool("is_starbase", &out->is_starbase);
+  o->GetBool("isHero", &out->is_hero);
   Sub(*o, "engines", &out->engines);
   Sub(*o, "lifeSupport", &out->life_support);
   Sub(*o, "weapons", &out->weapons_sys);

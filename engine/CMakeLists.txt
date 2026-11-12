@@ -27,6 +27,7 @@ add_library(fleet_core STATIC
     src/game/HoverShip.cpp
     src/game/PathGrid.cpp
   src/game/Combat.cpp
+  src/game/Shockwave.cpp
   src/game/Shell.cpp
   src/game/MenuLayout.cpp
   src/formats/GuiCfg.cpp

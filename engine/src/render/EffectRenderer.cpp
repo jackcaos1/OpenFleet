@@ -30,8 +30,9 @@ precision mediump float;
 in vec2 v_uv;
 in float v_fade;
 uniform sampler2D u_tex;
+uniform vec3 u_tint;
 out vec4 o_color;
-void main() { o_color = vec4(texture(u_tex, v_uv).rgb * v_fade, 1.0); }
+void main() { o_color = vec4(texture(u_tex, v_uv).rgb * v_fade * u_tint, 1.0); }
 )";
 
 GLuint Compile(GLenum type, const char* source) {
@@ -82,6 +83,7 @@ bool EffectRenderer::Init() {
   }
   u_proj_ = glGetUniformLocation(program_, "u_proj");
   u_tex_ = glGetUniformLocation(program_, "u_tex");
+  u_tint_ = glGetUniformLocation(program_, "u_tint");
   glGenVertexArrays(1, &vao_);
   glGenBuffers(1, &vbo_);
   glBindVertexArray(vao_);
@@ -189,6 +191,7 @@ void EffectRenderer::Draw(const Mat4& proj, const Mat4& vm, const std::vector<Sh
   glUseProgram(program_);
   glUniformMatrix4fv(u_proj_, 1, GL_FALSE, proj.m);
   glUniform1i(u_tex_, 0);
+  glUniform3f(u_tint_, 1.0f, 1.0f, 1.0f);
   glActiveTexture(GL_TEXTURE0);
   glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_FALSE);
@@ -202,6 +205,38 @@ void EffectRenderer::Draw(const Mat4& proj, const Mat4& vm, const std::vector<Sh
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(kv.second.size() * sizeof(float)), kv.second.data(), GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(kv.second.size() / 6));
   }
+  glBindVertexArray(0);
+  glDepthMask(GL_TRUE);
+  glDisable(GL_BLEND);
+  glDisable(GL_DEPTH_TEST);
+}
+
+void EffectRenderer::DrawMesh(const Mat4& proj, const Mat4& vm, const std::vector<float>& vertices, const std::string& texture, const float tint[3], float fade, FileSource& src) {
+  if (!program_ || vertices.empty() || fade <= 0) return;
+  const GLuint tex = Texture(texture, src);
+  if (!tex) return;
+  std::vector<float> v;  // x y z u v fade, im Ansichtsraum
+  v.reserve(vertices.size() / 5 * 6);
+  for (size_t i = 0; i + 4 < vertices.size(); i += 5) {
+    const V3 p = Xf(vm.m, &vertices[i]);
+    v.insert(v.end(), {p.x, p.y, p.z, vertices[i + 3], vertices[i + 4], fade});
+  }
+  glUseProgram(program_);
+  glUniformMatrix4fv(u_proj_, 1, GL_FALSE, proj.m);
+  glUniform1i(u_tex_, 0);
+  glUniform3f(u_tint_, tint[0], tint[1], tint[2]);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glEnable(GL_DEPTH_TEST);
+  glDepthMask(GL_FALSE);
+  glDisable(GL_CULL_FACE);  // Original-Windung unbekannt: beide Seiten
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE);  // additiv (Annahme nach der Zeichenkette "additive" im Ladecode)
+  glBindVertexArray(vao_);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+  glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STREAM_DRAW);
+  glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size() / 6));
+  glUniform3f(u_tint_, 1.0f, 1.0f, 1.0f);
   glBindVertexArray(0);
   glDepthMask(GL_TRUE);
   glDisable(GL_BLEND);

@@ -30,6 +30,9 @@ struct PerTarget {
   float For(const std::string& target_odf) const;
 };
 
+// Liest einen Wert mit Ausnahmen je Zielart (Schluessel key); false, wenn er fehlt.
+bool ReadPerTarget(const OdfObject& o, const char* key, PerTarget* out);
+
 struct WeaponDef {
   std::string odf;
   std::string name;  // wpnName
@@ -79,6 +82,7 @@ struct UnitDef {
   float max_special_energy = 0, special_energy_rate = 0;
   float range_scan = 0, damaged_scan = 0, attack_power = 0;
   bool is_starbase = false;
+  bool is_hero = false;    // isHero: laengere Sterbephase (docs/formats/ship-health.md)
   std::string physics_file;
   SubsystemDef engines, life_support, weapons_sys, shield_generator, sensors, hull;
   float critical_percent = 0.5f, life_support_loss = 2.0f;

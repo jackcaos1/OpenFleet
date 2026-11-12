@@ -159,7 +159,7 @@ int SpriteRenderer::SetNodes(const Model& model, const SprLibrary& lib, FileSour
   return count();
 }
 
-void SpriteRenderer::Draw(const Mat4& proj, const Mat4& vm, double time) const {
+void SpriteRenderer::Draw(const Mat4& proj, const Mat4& vm, double time, float scale) const {
   if (!enabled_ || !program_ || lights_.empty()) return;
   glUseProgram(program_);
   glUniformMatrix4fv(u_proj_, 1, GL_FALSE, proj.m);
@@ -184,9 +184,10 @@ void SpriteRenderer::Draw(const Mat4& proj, const Mat4& vm, double time) const {
         for (int k = 0; k < 3; ++k) colour[k] = std::min(1.0f, std::max(0.0f, v[k]));
       }
     }
-    const float cx = m[0] * l.pos[0] + m[4] * l.pos[1] + m[8] * l.pos[2] + m[12];
-    const float cy = m[1] * l.pos[0] + m[5] * l.pos[1] + m[9] * l.pos[2] + m[13];
-    const float cz = m[2] * l.pos[0] + m[6] * l.pos[1] + m[10] * l.pos[2] + m[14];
+    const float px = scale * l.pos[0], py = scale * l.pos[1], pz = scale * l.pos[2];
+    const float cx = m[0] * px + m[4] * py + m[8] * pz + m[12];
+    const float cy = m[1] * px + m[5] * py + m[9] * pz + m[13];
+    const float cz = m[2] * px + m[6] * py + m[10] * pz + m[14];
     glUniform3f(u_center_, cx, cy, cz);
     if (l.flat) {
       // Um 90 Grad gedreht: die Breite (x) laeuft entlang der Knoten-Achse "up", die Hoehe (y) entlang "right"
@@ -201,7 +202,7 @@ void SpriteRenderer::Draw(const Mat4& proj, const Mat4& vm, double time) const {
       glUniform3f(u_ax_, 1, 0, 0);
       glUniform3f(u_ay_, 0, 1, 0);
     }
-    glUniform2f(u_size_, l.size[0], l.size[1]);
+    glUniform2f(u_size_, scale * l.size[0], scale * l.size[1]);
     glUniform3fv(u_colour_, 1, colour);
     glUniform4fv(u_uv_, 1, l.uv);
     glBindTexture(GL_TEXTURE_2D, l.texture);

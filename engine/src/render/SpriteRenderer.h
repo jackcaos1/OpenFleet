@@ -28,8 +28,8 @@ class SpriteRenderer {
   int count() const { return static_cast<int>(lights_.size()); }
   void SetEnabled(bool on) { enabled_ = on; }
   bool enabled() const { return enabled_; }
-  // view_model: Ansicht*Modell, proj: Projektion. time in Sekunden.
-  void Draw(const Mat4& proj, const Mat4& view_model, double time) const;
+  // view_model: Ansicht*Modell, proj: Projektion. time in Sekunden. scale vergroessert Knotenpositionen und Spritegroessen (Explosionen).
+  void Draw(const Mat4& proj, const Mat4& view_model, double time, float scale = 1.0f) const;
 
  private:
   struct Light {

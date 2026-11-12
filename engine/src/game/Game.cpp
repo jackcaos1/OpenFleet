@@ -500,9 +500,18 @@ struct Game::Impl {
 
   // Welches Modell ein Kartenobjekt zeigt. Das SOD steht in der ODF (baseName, sonst gleicher Name); Asteroidenfelder haben
   // keins (dont_load_SOD) und bestehen aus Einzelfelsen. Annahme: Felsen = Master1..8 (sscr_1.sod gibt es nicht).
+  // ODF-Schluessel hidden = 1: Das Original zeichnet solche Objekte nicht (Zeichenschleife 0x5b6620 prueft das Klassenbyte +0x1a4, ausser im Debug-Modus
+  // 0x68dc64+0x64) und nimmt sie weder in die Auswahl (0x46d236) noch in die Sichtbarkeit (0x471e37) auf.
+  bool IsHiddenOdf(const std::string& odf) const {
+    const OdfObject* od = odf_lib ? odf_lib->Get(ToLowerAscii(odf)) : nullptr;
+    bool h = false;
+    return od && od->GetBool("hidden", &h) && h;
+  }
+
   bool ResolveMapObject(const BznObject& o, MapObjectInfo* info) {
     const std::string l = ToLowerAscii(o.odf);
     if (l.empty()) return false;
+    if (IsHiddenOdf(l)) return false;
     std::string sod = l, cls;
     const OdfObject* od = odf_lib ? odf_lib->Get(l) : nullptr;
     bool dont_load = false;
@@ -807,6 +816,7 @@ struct Game::Impl {
     // Punkte fuer alles, was kein Modell hat (Asteroidenfelder, Lichter, nicht ladbare Modelle)
     std::vector<MarkerRenderer::Marker> pts;
     auto add_point = [&](const BznObject& o) {
+      if (IsHiddenOdf(o.odf)) return;  // Klassenschluessel hidden = 1 (z. B. dlight): im Original nicht gezeichnet (0x5b6620)
       MarkerRenderer::Marker m;
       m.pos[0] = o.pos[0];
       m.pos[1] = o.pos[1];

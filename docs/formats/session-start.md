@@ -18,11 +18,20 @@ Verified in the executable (GOG Armada.exe, addresses given) or in the data file
 - **Object race.** `SetRace` (0x439a20) writes the race of one *object* (field +0x1a4, looked up by name by 0x4440b0); the default comes from the object class
   (ODF). The map's object names carry the race prefix (`kbase`, `fbase`).
 
+- **Team records and start resources** (0x448d50 creates the nine team records of 0xbc bytes, 0x448b50 is the single-record variant). Per record:
+  dilithium (+0x14, float), crew (+0x18 current, +0x1c), a third value (+0x24, float), the team number (+0x28) and a relation table (+0x2c, nine entries,
+  the own entry set to 2 = ally). The configuration loader (0x4453f0) reads `cfgMax...` and `cfgStarting...` from RTS_CFG.h into the globals 0x633e2c..0x633e3c
+  through 0x448c60. For a team that has a player, the values come from the lobby game settings (settings object fields +0x58, +0x5c, +0x60; the
+  game mode in +0x80 decides: mode 3 uses the RTS_CFG.h globals 3500 / 4000 instead) and are scaled per player: `value * playerHandicap / 100`
+  (handicap from settings +0x94 + 0x4c * slot, 100 if handicaps are off, byte +0x4e). The lobby option lists for these settings (arrays at
+  0x68aa4c, 0x68a9f4, 0x68a9dc, five entries each) are read from the language files (section `multiplayer_setup`, keys `sd_value_2..5`, `sc_value_2..`,
+  `mo_value_2..`), which are obfuscated (`*.ldl`, not decoded yet), so the concrete low / normal / high values are not known.
+
 ## Open (not verified)
 - What happens to the start objects of slots nobody plays (a 4 player map with 2 players). The client keeps them as they are in the map.
 - Whether the race chosen for a slot in the lobby replaces the map's start objects. The map header has one "race" entry (2duel: klingon, 4first: borg), the
   start objects carry fixed prefixes (4hub: team 1 federation, team 4 borg). The client keeps the map's objects; the HUD race follows slot 1.
 - How maps without any start object (4first, 4nirvana, 285 and 266 environment objects only) get their start units. The routine is not found yet; the
   client starts them empty and says so in a message.
-- The resource start values (`cfgStartingDilithium`, `cfgStartingCrew`): read into a configuration object (0x448c60), the use at session start is not traced.
+- The concrete start dilithium / crew for the lobby options "few / normal / many" (needs the decoded LDL files) and which game mode value a skirmish uses.
 - The local player number of the human in a skirmish (assumed to be slot 1 = `Camera_1`).

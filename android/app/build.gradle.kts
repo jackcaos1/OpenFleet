@@ -11,8 +11,8 @@ android {
         applicationId = "dev.openfleet.client"
         minSdk = 26
         targetSdk = 34
-        versionCode = 76
-        versionName = "0.1.76-debug"
+        versionCode = 77
+        versionName = "0.1.77-debug"
 
         ndk {
             // arm64-v8a: echte Geraete, x86_64: Emulator

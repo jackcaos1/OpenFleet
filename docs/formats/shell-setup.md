@@ -65,6 +65,11 @@ Implemented after this specification: all widgets above with the label texts, ta
 through the "select map" popup, the options are stored (`game/Skirmish.*`); effective so far: default units (starting units from the race ODFs with the spiral placement). Colour key magenta (255, 0, 255) of the
 bitmaps is transparent.
 
+## Portrait layout (deviation from the original, client only)
+In portrait format (height > width) the left half (players, messages; reference x 0..330, y 0..445) and the right half (map, options; x 333..640, y 0..445) are drawn
+one above the other from two cut-outs of `mpsbg.bmp`; below them the buttons: previous menu and main menu side by side, launch squeezed to the screen width underneath.
+Landscape stays as in the original. The map selection popup is scaled to the screen width in portrait. The same layout is to be used for the multiplayer match screen.
+
 ## Open
 - Exact column x of the player row items and the row start (client uses y = 57 + 19 i from the background bitmap).
 - Behaviour of each option on the session (which options the single player instant action honours).

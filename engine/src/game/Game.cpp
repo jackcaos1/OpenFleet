@@ -1620,7 +1620,11 @@ struct Game::Impl {
   }
 
   // Feind laut Beziehungstabelle (game/Teams.h); herrenlose Derelict-Schiffe beschiesst niemand (Vorgabe des Nutzers, im Original nicht gepruefte Zielwahl)
-  bool Hostile(const Spawned& a, const Spawned& b) const { return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && !b.derelict; }
+  // Original 0x42faa0: relation check, then a derelict target is refused unless the attacker's player slot is flagged as AI (+0xa8, set by
+  // SetIsAITeam). So computer players still shoot at derelict enemies, the human player's weapons never target them.
+  bool Hostile(const Spawned& a, const Spawned& b) const {
+    return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && (!b.derelict || a.team != human_team);
+  }
 
   static float Dist3(const float a[3], const float b[3]) {
     const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];

@@ -2625,53 +2625,38 @@ struct Game::Impl {
     if (idx < 0) return;
     LoadMap(idx);
     if (!map_loaded) return;
-    // Original (docs/formats/session-start.md): die Startobjekte liegen in der Karte (BZN-Objekte mit Team N gehoeren dem Spieler N), die Anfangskamera ist der
-    // Pfad "Camera_N". Die Startfelder der .mdf sind nur Vorschaupunkte auf einem 128er Raster, keine Weltkoordinaten.
+    // Original (docs/formats/session-start.md, Stand der Pruefung dort): Das Original erzeugt keine Startobjekte; sie stehen in der Karte (BZN-Objekte mit Team N =
+    // Spieler N). Die Kamera startet auf dem Pfad "Camera_<Spielernummer>" (GameCamera-Start 0x4aaae0 -> 0x4791e0 -> 0x479250). Nicht geprueft sind: was mit den
+    // Objekten nicht belegter Plaetze geschieht, ob die Rasse des Platzes die Startobjekte ersetzt und wie Karten ohne Startobjekte (4first, 4nirvana) starten.
+    // Hier gilt deshalb nur, was belegt ist: die Objekte bleiben wie in der Karte, nur das Team wird auf den Bund des Platzes abgebildet.
     selected = -1;
-    static const char kRace[4] = {'f', 'k', 'r', 'b'};
     const int n = SkSlots();
-    std::vector<char> has_start(static_cast<size_t>(n), 0);
-    for (size_t k = spawned.size(); k-- > 0;) {
-      Spawned& o = spawned[k];
-      if (o.team < 1 || o.team > n) continue;  // neutral oder Szenerie (Teamnummer ohne Spielerplatz) bleibt
-      const SkSlot& sl = sk_slot[o.team - 1];
-      if (sl.kind == 0) {  // Platz nicht belegt: seine Startobjekte entfallen
-        UnstampStation(o);
-        spawned.erase(spawned.begin() + static_cast<long>(k));
-        continue;
-      }
-      has_start[static_cast<size_t>(o.team - 1)] = 1;
-      o.team = sl.team;  // Bund des Platzes
+    int owned = 0;
+    for (Spawned& o : spawned) {
+      if (o.team < 1 || o.team > n || sk_slot[o.team - 1].kind == 0) continue;
+      o.team = sk_slot[o.team - 1].team;
+      ++owned;
     }
     auto camera = [&](int player, float out[3]) {
       for (const BznPath& p : map.paths) {
         if (ToLowerAscii(p.name) != "camera_" + std::to_string(player) || p.points.size() < 3) continue;
-        out[0] = p.points[0]; out[1] = 0.0f; out[2] = -p.points[2];  // Karte: z gespiegelt (GL)
+        out[0] = p.points[0]; out[1] = 0.0f; out[2] = -p.points[2];  // Karte: z gespiegelt (GL); Originalhoehe (Decke + Boden) / 2 = 38,5, hier Kartenebene
         return true;
       }
       return false;
     };
     for (int i = 0; i < n; ++i) {
       const SkSlot& sl = sk_slot[i];
-      if (sl.kind == 0) continue;
+      if (sl.kind == 0 || i != 0) continue;
       float c[3] = {0, 0, 0};
-      const bool have_cam = camera(i + 1, c);
-      if (!has_start[static_cast<size_t>(i)] && have_cam) {
-        // ANNAHME: Karten ohne Startobjekte (z. B. 4first, 4nirvana) bekommen Basis und Bauschiff am Kamerapunkt des Platzes; das Original-Verhalten ist nicht geprueft
-        const std::string p(1, kRace[sl.race]);
-        SpawnAt(p + "base", sl.team, c, false, false);
-        const float cpos[3] = {c[0] + 176.0f, 0, c[2] - 151.0f};
-        SpawnAt(p + "const", sl.team, cpos, false, false);
-      }
-      if (i == 0) {
-        hud_race = sl.race;
-        human_team = sl.team;
-        LoadHud();
-        if (have_cam) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
-        map_dist = 2200.0f;
-        zoom = 1.0f;
-      }
+      hud_race = sl.race;
+      human_team = sl.team;
+      LoadHud();
+      if (camera(i + 1, c)) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
+      map_dist = 2200.0f;
+      zoom = 1.0f;
     }
+    if (owned == 0) Message("Diese Karte enthaelt keine Startobjekte; der Start im Original ist noch nicht untersucht.");
     in_game = true;
     Message("Skirmish: " + sk_maps[static_cast<size_t>(sk_sel)]);
   }

@@ -24,6 +24,7 @@
 #include "game/Boarding.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
+#include "game/Teams.h"
 #include "game/ShipSim.h"
 #include "game/HoverSim.h"
 #include "game/HoverShip.h"
@@ -1177,6 +1178,27 @@ void TestCombat() {
   CHECK(RollHit(&r, 1.0f) && !RollHit(&r, 0.0f));
 }
 
+void TestTeamsAndDifficulty() {
+  using namespace fleet;
+  CfgScope cfg;
+  // Beziehungstabelle: Team 0 neutral, gleiche Gruppe verbuendet, sonst Feind
+  CHECK(TeamRelation(0, 3) == kNeutral && TeamRelation(2, 0) == kNeutral && TeamRelation(2, 2) == kAlly && TeamRelation(1, 2) == kEnemy);
+  CHECK(IsEnemyTeam(1, 2) && !IsEnemyTeam(1, 1) && !IsEnemyTeam(0, 1));
+  // Schwierigkeit: 1 leicht, 3 schwer, sonst normal
+  CombatCfg().easy_damage = 0.5f;
+  CombatCfg().hard_damage = 2.0f;
+  CHECK(DifficultyDamageScale(1) == 0.5f && DifficultyDamageScale(3) == 2.0f && DifficultyDamageScale(2) == 1.0f && DifficultyDamageScale(0) == 1.0f);
+  Health h;
+  HealthSpec sp;
+  sp.shield_max = 100;
+  InitHealth(&h, sp, RaceRules());
+  HitInfo hi;
+  hi.damage = 10;
+  hi.damage_scale = DifficultyDamageScale(3);
+  ApplyHitTo(&h, kHitHull, hi);
+  CHECK(h.shield == 80.0f);  // schwer: doppelter Schaden
+}
+
 void TestBoarding() {
   using namespace fleet;
   CfgScope cfg;
@@ -1764,6 +1786,7 @@ int main() {
   TestShockwave();
   TestNoPathStops();
   TestBoarding();
+  TestTeamsAndDifficulty();
   TestZip();
   std::printf("%d Pruefungen, %d Fehler\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

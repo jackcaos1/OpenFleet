@@ -130,6 +130,11 @@ CombatConfig& CombatCfg() {
   return cfg;
 }
 
+float DifficultyDamageScale(int mode) {
+  const CombatConfig& c = CombatCfg();
+  return mode == 1 ? c.easy_damage : (mode == 3 ? c.hard_damage : 1.0f);
+}
+
 bool Health::damaged() const {
   for (const SystemBlock& b : sys)
     if (b.points < b.max_points) return true;

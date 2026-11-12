@@ -34,8 +34,10 @@
 #include "render/ModelRenderer.h"
 #include "render/SpriteRenderer.h"
 #include "game/Boarding.h"
+#include "game/Cinematic.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
+#include "game/Teams.h"
 #include "game/Shell.h"
 #include "game/FireDemo.h"
 #include "render/EffectRenderer.h"
@@ -365,6 +367,9 @@ struct Game::Impl {
   bool move_armed = false;
   bool attack_armed = false;
   bool transport_armed = false;
+  std::vector<CinematicRequest> cinematic_requests;  // Anforderungen an die (noch fehlende) Kinosicht
+  int difficulty_mode = 2;  // Original [0x68dc64]: 1 leicht, 2 normal, 3 schwer; Auswahl im Client folgt (Vorgabe normal, Faktor 1)
+  int human_team = 1;       // Team des menschlichen Spielers (Spieler 1 der Spieleinstellung)
   mutable float mm_centre[2] = {0, 0};  // Zuordnung Minikarte <-> Welt (zuletzt in BuildHudState berechnet)
   mutable float mm_extent = 0;
   std::vector<Projectile> projectiles;
@@ -679,6 +684,8 @@ struct Game::Impl {
     if (val("USE_SYSTEM_HITPOINTS", &f)) cc.use_system_hitpoints = f != 0;
     if (val("SYSTEM_HITPOINTS_BONUS", &f)) cc.system_hitpoints_bonus = static_cast<int>(f);
     if (val("SHIELD_DAMAGE_PROTECTION", &f)) cc.shield_damage_protection = f;
+    if (val("EASY_DAMAGE", &f)) cc.easy_damage = f;
+    if (val("HARD_DAMAGE", &f)) cc.hard_damage = f;
   }
 
   void BuildStars() {
@@ -1612,7 +1619,8 @@ struct Game::Impl {
     return (it != spawn_models.end() ? it->second.radius : 20.0f) * s.scale;
   }
 
-  bool Hostile(const Spawned& a, const Spawned& b) const { return a.team > 0 && b.team > 0 && a.team != b.team && b.hp.alive() && !b.derelict; }
+  // Feind laut Beziehungstabelle (game/Teams.h); herrenlose Derelict-Schiffe beschiesst niemand (Vorgabe des Nutzers, im Original nicht gepruefte Zielwahl)
+  bool Hostile(const Spawned& a, const Spawned& b) const { return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && !b.derelict; }
 
   static float Dist3(const float a[3], const float b[3]) {
     const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
@@ -1622,7 +1630,9 @@ struct Game::Impl {
   bool CanFly(const Spawned& s) const { return s.movable && !s.derelict && s.hp.alive() && s.hp.sys_ok(kEngines); }
 
   // Treffer anwenden; Ziel und Nachbarn desselben Teams gelten danach als angegriffen (Alarmstufen).
-  void HitShip(Spawned& t, unsigned owner, const HitInfo& hi) {
+  void HitShip(Spawned& t, unsigned owner, const HitInfo& hi0) {
+    HitInfo hi = hi0;
+    if (t.team == human_team) hi.damage_scale = DifficultyDamageScale(difficulty_mode);  // Original 0x465151: nur Schiffe des Spielers
     ApplyHit(&t.hp, &rng, hi);
     if (t.team <= 0) return;
     t.attacker_id = owner;
@@ -1659,7 +1669,7 @@ struct Game::Impl {
     const int ti = FindById(s.beam_id);
     if (ti < 0 || s.derelict || !s.hp.alive() || !spawned[static_cast<size_t>(ti)].hp.alive()) { s.beam_id = 0; return; }
     Spawned& t = spawned[static_cast<size_t>(ti)];
-    const bool enemy = s.team != t.team;
+    const bool enemy = IsEnemyTeam(s.team, t.team);
     const BeamStep r = TransporterStep(&s.hp, &t.hp, Dist3(s.st.pos, t.st.pos), enemy);
     if (r.created) {
       Party p;
@@ -1932,6 +1942,13 @@ struct Game::Impl {
         for (int k = 0; k < 3; ++k) w.sw.pos[k] = f.pos[k];
         w.sw.scale = f.radius;
         shockwaves.push_back(w);
+        {  // Original 0x51b454: Kameraanforderung fuer die Schockwelle
+          CinematicRequest cr;
+          cr.duration = 1.0f;
+          cr.value2 = 6.0f;
+          cr.int0 = cr.int1 = 3;
+          PostCinematic(&cinematic_requests, cr);
+        }
       }
     }
     for (ShockInst& w : shockwaves) {
@@ -1954,6 +1971,15 @@ struct Game::Impl {
       if (!s.dying) {
         s.dying = true;
         s.die = MakeDying(std::sqrt(s.st.vel[0] * s.st.vel[0] + s.st.vel[1] * s.st.vel[1] + s.st.vel[2] * s.st.vel[2]), s.hero);
+        {  // Original 0x466090: Kameraanforderung beim Start der Sterbephase (Kinosicht fehlt noch)
+          CinematicRequest cr;
+          cr.duration = s.die.left;
+          cr.value2 = 1.5f;
+          cr.int0 = 0;
+          cr.int1 = 3;
+          cr.object = s.id;
+          PostCinematic(&cinematic_requests, cr);
+        }
         s.target_id = 0;
         s.beam_id = 0;
         s.auto_move = 0;
@@ -2012,6 +2038,14 @@ struct Game::Impl {
           for (int c = 0; c < 3; ++c) f.axis[c] = v[c] * inv;
         }
         f.shock_pending = s.has_shock && RadiusOf(s) > s.shock.minimum;
+        if (!f.shock_pending) {  // Original 0x51b39a: ohne Schockwelle (oder zu klein) fordert der Feuerball selbst die Kamera an
+          CinematicRequest cr;
+          cr.duration = 1.0f;
+          cr.value2 = 2.0f;
+          cr.int0 = cr.int1 = 3;
+          cr.object = s.id;
+          PostCinematic(&cinematic_requests, cr);
+        }
         f.shock = s.shock;
         fireballs.push_back(f);
         fireball_ok = true;
@@ -2596,6 +2630,7 @@ struct Game::Impl {
       SpawnAt(p + "const", sl.team, cpos, false, false);
       if (i == 0) {
         hud_race = sl.race;
+        human_team = sl.team;
         LoadHud();
         map_target[0] = cx; map_target[1] = 0; map_target[2] = cz;
         map_dist = 2200.0f;

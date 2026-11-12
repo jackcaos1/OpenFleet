@@ -191,6 +191,20 @@ no deviation). Constants from the data section: range 300 (centre distance), int
     below X the rest `(X - targetCrew) x strength(target) / strength(party)` captures it (the ship gets the party's team and race and the rest as crew).
     If the target survives or the rest is 0, nothing changes hands (a target left with less than 1 crew becomes derelict).
   - `boardingStrength` is a race value in the race definition (federation 1.0, Klingon 1.5, Romulan 0.75, Borg 1.75).
-- A derelict ship keeps its team; the original does not set it to 0. Whether enemy weapons fire at derelict ships is **unknown** (the client does not target them).
+- A derelict ship keeps its team; the original does not set it to 0. Whether enemy weapons fire at derelict ships was not read; by decision of the project owner derelict ships count as ownerless and nobody fires at them (the client does not target them).
 - Not read: which ships may use the transport command and under which conditions (user interface level), the relation table itself (the client
   treats equal teams as friends and all others as enemies), the station-capture effect (`0x5619a0`), the sound and beam effects.
+
+## Team relations, difficulty, cinematic requests
+
+- **Relations** (team record, entries at `+0x2c`, accessors 0x449430-0x449530, built for the game by 0x443b20): 0 enemy, 1 neutral, 2 ally.
+  Team 0 is neutral to everyone; otherwise teams of the same group (the "Team" column of the game setup) are allies and all others enemies.
+  The original keeps the group separate from the player number; the client uses the group as the team number, so allied players share a team number
+  (a deviation only visible when allies board each other's derelict ships: the original changes nothing, the client swaps the race). Code: `game/Teams.h`.
+- **Difficulty** (0x465151): a mode value 1 (easy) or 3 (hard) multiplies the damage taken by the human player's ships by `EASY_DAMAGE` (0.5) or `HARD_DAMAGE` (2.0)
+  from `RTS_CFG.h`; every other mode means factor 1. A further condition on a game-mode object (single player) was not read. The client has the factor
+  (`DifficultyDamageScale`, `Game::difficulty_mode`, default normal = 1) but no menu entry yet.
+- **Cinematic requests** (shot director, `0x47aef0`): the client now records the requests the original makes (`game/Cinematic.h`, `Game::cinematic_requests`): at the start of the dying
+  phase (14.0, dying timer, 1.5, 0, 3), from a fireball without ring (14.0, 1.0, 2.0, 3, 3) and from the shockwave (14.0, 1.0, 6.0, 3, 3). Nothing reads them yet;
+  the meaning of the numbers is unknown (named by position).
+

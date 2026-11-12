@@ -41,7 +41,12 @@ struct CombatConfig {
   bool use_system_hitpoints = true;       // USE_SYSTEM_HITPOINTS; aus: kein Schaden (0x465119)
   int system_hitpoints_bonus = 200;       // SYSTEM_HITPOINTS_BONUS, wird zu jedem vorhandenen System addiert (0x460f9c)
   float shield_damage_protection = 0.8f;  // SHIELD_DAMAGE_PROTECTION: Anteil des Schadens, den der Schild aufnimmt
+  // Schwierigkeit (0x465173): Modus 1 = leicht, 3 = schwer, sonst normal; der Faktor gilt fuer Schaden an den Schiffen des Spielers (EASY_DAMAGE 0.5,
+  // HARD_DAMAGE 2.0 in RTS_CFG.h). Der Client kennt noch keine Auswahl, Vorgabe ist normal (Faktor 1).
+  float easy_damage = 0.5f, hard_damage = 2.0f;
 };
+// Faktor fuer den Schaden an Schiffen des Spielers: mode 1 -> easy_damage, 3 -> hard_damage, sonst 1.
+float DifficultyDamageScale(int mode);
 CombatConfig& CombatCfg();
 
 struct SystemSpec {  // je Teilsystem aus der Einheiten-ODF (Vorgaben der Schablone 0x460ef0: 1 Punkt, Reparaturzeit 1)

@@ -91,5 +91,7 @@ Aufwand grob: ~2500 Instruktionen + Hilfsklassen (Listen 0x406cb0/0x406c50/0x401
 - Wegpunkt weiter (Index +0xf4), wenn der QUADRIERTE DREIDIMENSIONALE Abstand zum Wegpunkt kleiner ist als `pathLeadDistance^2` (Klassenfeld +0x214, beim Laden quadriert,
   Wert 150 in allen sechs Physik-ODFs); die Zwischenpunkte liegen auf (Decke + Boden) / 2. Der Client rechnet jetzt ebenso (vorher 2D).
 - Kein Weg (0x42e0c3): Rueckgabe von 0x40a310 ist 0 -> Wegobjekt (+0xf8) bleibt leer; ist der Zustand des Lenkobjekts (+0x20) nicht 0x19, wird 0x46eac0(2, 0, 0) aufgerufen
-  und die Funktion endet, sonst springt sie nach 0x42e3e6. Bedeutung von 0x46eac0 und Zustand 0x19: UNBEKANNT, Verhalten des Schiffs danach nicht gelesen.
+  und die Funktion endet, sonst springt sie nach 0x42e3e6. 0x46eac0(Modus, a, b) setzt einen neuen Befehl (Modus in +0x110, Argumente in +0x124/+0x121), gibt das alte Zielobjekt
+  (+0x118) frei und legt ein neues an der EIGENEN Position an (+0x12c): Das Schiff bekommt also das Ziel "hier bleiben" und fliegt nicht los. Der Client verwirft in diesem Fall
+  den Zielbefehl (ShipState::has_target = false). UNBEKANNT bleibt der Pfad fuer den Zustand 0x19 (springt nach 0x42e3e6).
 

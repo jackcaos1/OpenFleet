@@ -1631,6 +1631,25 @@ static void TestHoverSim() {
   }
 }
 
+static void TestNoPathStops() {
+  using namespace fleet;
+  HoverOdf o;
+  o.impulseSpeed = 40; o.frontBackInertia = 3.0f; o.upDownInertia = 3.0f; o.leftRightInertia = 3.0f;
+  ShipState ss; ss.yaw = 0;
+  HoverShip hs; hs.Init(o, ss);
+  PathGrid g; g.Init(-1500, -1500, 1500, 1500, 50); g.StampField(0, 0);
+  ss.has_target = true; ss.target[0] = 0; ss.target[1] = 0; ss.target[2] = 0;   // Ziel mitten im gesperrten Feld
+  ss.pos[0] = -600; ss.pos[2] = 0;
+  HoverShipStep(&hs, &ss, true, 0.05f, nullptr, &g);
+  CHECK(!ss.has_target);  // kein Weg: Befehl verworfen (Original 0x42e0c3)
+  ss.has_target = true; ss.target[0] = 600; ss.target[2] = 0;                    // Ziel hinter dem Feld: Weg existiert
+  HoverShipStep(&hs, &ss, true, 0.05f, nullptr, &g);
+  CHECK(ss.has_target);
+  ss.target[0] = 0; ss.target[2] = 0;
+  HoverShipStep(&hs, &ss, true, 0.05f, nullptr, &g);
+  CHECK(!ss.has_target);
+}
+
 static void TestPathGrid() {
   using namespace fleet;
   PathGrid g;
@@ -1743,6 +1762,7 @@ int main() {
   TestCombat();
   TestDying();
   TestShockwave();
+  TestNoPathStops();
   TestBoarding();
   TestZip();
   std::printf("%d Pruefungen, %d Fehler\n", g_checks, g_failures);

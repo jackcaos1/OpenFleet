@@ -86,3 +86,17 @@ Aufwand grob: ~2500 Instruktionen + Hilfsklassen (Listen 0x406cb0/0x406c50/0x401
 - Footprint 198 ist nur ein Kostenfaktor (Kante = Laenge * Zellkosten), kein Hindernis: Ein Pfad quer durch die Stationsbox kostet ~2x, wird also gewaehlt, wenn der Umweg laenger ist. Das ist wie im Original.
 - Die Engine hat KEINE Kollisionsvermeidung. RTS_CFG OBSTACLE_AVOIDANCE=0 schaltet nur 0x42ef70 ab. Das Original hat zusaetzlich das System aus Collision.cfg (Config-Loader 0x4365c6, Globals 0x5f99d8..0x5f9a10, 0x63338c): Range-Search-Grid 256, Lateral-Repulsion (AN, Faktor 120, Gefahrenbreite 1.0), Full-Potential-Field (AN), Direct/Martin/RealCollisions (AUS), REPULSIVE_COEFFICIENT 1200, Cutoff 300, Influence 110, EXTRA_GOAL_ATTRACTION 5, SWITCH_TO_NEXT_POINT 20.
 - Lateral-Funktion beginnt 0x435600 (Gefahrenbreite 0x5f99f4, Multiplikator 0x5f99f0 bei 0x43572c); Potentialfeld (FindPotentialField) und Aufrufer noch nicht gelesen. Nicht portiert.
+
+## Nachtrag: Wegfolgen 0x42ded0 (gelesen, nicht emuliert)
+- Wegpunkt weiter (Index +0xf4), wenn der QUADRIERTE DREIDIMENSIONALE Abstand zum Wegpunkt kleiner ist als `pathLeadDistance^2` (Klassenfeld +0x214, beim Laden quadriert,
+  Wert 150 in allen sechs Physik-ODFs); die Zwischenpunkte liegen auf (Decke + Boden) / 2. Der Client rechnet jetzt ebenso (vorher 2D).
+- Kein Weg (0x42e0c3): Rueckgabe von 0x40a310 ist 0 -> Wegobjekt (+0xf8) bleibt leer; ist der Zustand des Lenkobjekts (+0x20) nicht 0x19, wird 0x46eac0(2, 0, 0) aufgerufen
+  und die Funktion endet, sonst springt sie nach 0x42e3e6. 0x46eac0(Modus, a, b) setzt einen neuen Befehl (Modus in +0x110, Argumente in +0x124/+0x121), gibt das alte Zielobjekt
+  (+0x118) frei und legt ein neues an der EIGENEN Position an (+0x12c): Das Schiff bekommt also das Ziel "hier bleiben" und fliegt nicht los. Der Client verwirft in diesem Fall
+  den Zielbefehl (ShipState::has_target = false). UNBEKANNT bleibt der Pfad fuer den Zustand 0x19 (springt nach 0x42e3e6).
+
+## Nachtrag: Kartengrenzen (gelesen)
+- Die Grenzen des Planers sind die sechs Werte aus dem Kopf der Karte (Load_Save 0x44abb0 schreibt sie nach 0x6343f0..0x634404; Reihenfolge in der Datei: x min, x max, y min, y max, z min, z max;
+  die y-Werte (-28.5 / 105.5) gehoeren zu Boden und Decke). Der Planer (0x408e80/0x4093b0) rechnet Weite und Hoehe als Maximum minus Minimum in x und z. Der Client nahm bisher die Ausdehnung der
+  Objekte plus 1000; jetzt gelten die Kartengrenzen (Rasterversatz und damit die Zellgrenzen des Quadtrees stimmen dadurch mit dem Original ueberein).
+

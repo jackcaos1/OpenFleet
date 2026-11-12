@@ -65,6 +65,7 @@ void HoverShipStep(HoverShip* h, ShipState* ss, bool can_fly, float dt, const st
   s.powered = can_fly;
   if (!ss->has_target) h->path_goal[0] = 1e30f;
   HoverControls ctl;
+  bool no_path = false;
   if (ss->has_target && can_fly) {
     const float goal[3] = {ss->target[0], ss->target[1], -ss->target[2]};
     float t[3] = {goal[0], goal[1], goal[2]};
@@ -73,22 +74,29 @@ void HoverShipStep(HoverShip* h, ShipState* ss, bool can_fly, float dt, const st
       const bool new_goal = std::fabs(goal[0] - h->path_goal[0]) + std::fabs(goal[2] - h->path_goal[2]) > 1e-3f;
       if (new_goal) {
         h->path_goal[0] = goal[0]; h->path_goal[1] = goal[1]; h->path_goal[2] = goal[2];
-        grid->FindPath({s.pos[0], s.pos[2]}, {goal[0], goal[2]}, &h->path);
+        no_path = !grid->FindPath({s.pos[0], s.pos[2]}, {goal[0], goal[2]}, &h->path);
         h->path_idx = 0;
+        if (no_path) {  // Original 0x42e0c3: kein Weg -> Befehl "halten" an der eigenen Position (0x46eac0(2, 0, 0)), das Schiff fliegt nicht los
+          h->path.clear();
+          ss->has_target = false;
+        }
       }
       constexpr float kPathLead = 150.0f;   // pathLeadDistance der Klassen-ODF (Vorgabe 150)
       while (h->path_idx + 1 < h->path.size()) {
+        // Original 0x42ded0: dreidimensionaler Abstand zum Wegpunkt, Zwischenpunkte des Planers liegen auf (Decke + Boden) / 2; der Wegpunkt zaehlt als
+        // erreicht, wenn der quadrierte Abstand unter pathLeadDistance^2 liegt
         const float wx = h->path[h->path_idx].x - s.pos[0], wz = h->path[h->path_idx].z - s.pos[2];
-        if (wx * wx + wz * wz >= kPathLead * kPathLead) break;
+        const float wy = 0.5f * (HoverWorld().ceiling + HoverWorld().floor) - s.pos[1];
+        if (wx * wx + wy * wy + wz * wz >= kPathLead * kPathLead) break;
         ++h->path_idx;
       }
       if (h->path_idx < h->path.size()) { t[0] = h->path[h->path_idx].x; t[2] = h->path[h->path_idx].z; }
     }
     HoverAvoidArgs av;
     if (obstacles && !obstacles->empty()) { av.obstacles = obstacles->data(); av.count = static_cast<int>(obstacles->size()); }
-    HoverGotoSteer(h->cls, s, &ctl, t, h->cls.warp > h->cls.impulse, &av);
+    if (!no_path) HoverGotoSteer(h->cls, s, &ctl, t, h->cls.warp > h->cls.impulse, &av);
     const float dx = goal[0] - s.pos[0], dy = goal[1] - s.pos[1], dz = goal[2] - s.pos[2];
-    if (std::sqrt(dx * dx + dy * dy + dz * dz) <= h->cls.too_close_to_turn && s.speed < 0.5f) ss->has_target = false;   // angekommen
+    if (!no_path && std::sqrt(dx * dx + dy * dy + dz * dz) <= h->cls.too_close_to_turn && s.speed < 0.5f) ss->has_target = false;   // angekommen
   }
   HoverSimulate(h->cls, &s, ctl, dt);
   // zurueck ins Spiel (GL: z gespiegelt)

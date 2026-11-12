@@ -125,6 +125,7 @@ bool LoadRaceDef(OdfLibrary& lib, const std::string& race, RaceDef* out) {
   o->GetFloat("repairRed", &out->repair_red);
   o->GetFloat("weaponYellow", &out->weapon_yellow);
   o->GetFloat("weaponRed", &out->weapon_red);
+  o->GetFloat("boardingStrength", &out->boarding_strength);
   return true;
 }
 

@@ -17,9 +17,13 @@ When a system reaches 0 points (0x467b70): it is switched off, and unless the sh
 
 Crew below 1.0 on a ship with a maximum crew above 0 makes it derelict:
 
-- crew is set to 0, all five systems are switched off, the target speed is set to 0 (the ship brakes, it does not spin),
+- crew is set to 0, all five systems are switched off (active flag 0) and the shield is set to 0 (virtual call `+0x54` is
+  "set health", the shield; an earlier note called it the target speed, which was wrong),
+- with all systems off, the flight simulation brakes the ship linearly and no longer damps its rotation,
 - the ship stays in the world and stays selectable; no deselection happens here,
-- if crew is restored (>= 1.0), systems with points left are switched on again ("System n Renabled").
+- while derelict, the per-frame health step does nothing (no repair, no shield recharge, no life support loss),
+- if crew is restored (>= 1.0), the derelict flag is cleared and every switched-off system that has all its points is
+  switched on again ("System n Renabled").
 
 If a self-destruct countdown is running (handle in `+0x690`, started by 0x465be0), the ship explodes instead.
 (Countdown meaning: assumed; the start function and its callers were read, the timer callback was not traced.)
@@ -125,3 +129,84 @@ sites in total). Parameters seen: 14.0, a duration (the dying timer or 1.0), a c
 object handles. The client has no cinematic view yet (the HUD field shows only its default image), so these requests are
 not issued. To do: read the parameters and the shot selection, the camera classes (`CinematicCamera`, `ParabolicCamera`,
 `CameraTrack`) and render a second camera into the HUD field. Also listed in `docs/status-analysis.md`.
+
+## Health model (confirmed by emulation)
+
+All of this is implemented in `game/Combat.*` and checked against the original: `tools/health_check.py` runs random
+scenarios (hits with forced target, time steps, crew changes, self-destruct toggles, hit rolls) through the real functions
+of the executable (Unicorn, single-precision x87 as Direct3D 7 sets it up) and through the C++ model, and compares shield, crew,
+points, hit percentages, repair timers and the hit roll after every step. Six thousand scenarios (218 000 steps) agree.
+Tools: `tools/health_oracle.py`, `tools/health_dump.cpp`.
+
+- **Hit roll** (0x464dd0): an integer 0..99 from the game's generator (`s = (2273 s + 31) mod 0x19981595`, roll = `s mod 100`).
+  The float hit percentages are subtracted in the order engines, life support, weapons, shield, sensors, hull; what is left is
+  a critical hit. Result numbers: 0 engines, 1 life support, 2 weapons, 3 shield, 4 sensors, 5 hull, 6 critical. With the usual
+  100 percent total including 0.5 percent critical the integer roll never reaches the critical remainder.
+- **Damage packet** (0x465100): damage `d` (times the difficulty factor for the player's ships in single player: 0.5 easy, 2.0 hard,
+  taken from `RTS_CFG.h`; not modelled in the client, factor 1). The shield takes `SHIELD_DAMAGE_PROTECTION x d` (1.0 in the GOG
+  configuration), the rest `d - S` goes to the systems. A shield that goes below 0 passes the overflow to the systems. With
+  `ignoreShield` the shield is skipped and the systems take all of `d`. If the shield is above 0, the threshold above 0 and
+  `S - threshold` above 0, the crew drops by `crew x shieldCrewModifier x excess / 100 + min(excess, 1)`. After the shield stage a shield at or
+  below 0 is set to 0 and the recharge delay starts.
+- **Points** are whole numbers: `floor(systems damage + carry)`, the fraction carries over to the next hit (not for hull hits).
+  Hull hits cost `crew x hullCrewModifier x damage / 100 + min(damage, 1)`; a critical hit with at least one point explodes the ship.
+- **System at 0 points** (0x467b70): switched off, per-point repair time set, its hit percentage handed out equally to the other living systems
+  (a system is living if it is on, or temporarily disabled with points left), its own hit percentage set to 0, crew loses `crew x crewLoss / 100 + 1`.
+  When no system lives, the share goes to a collector (`criticalHitPercent` field `+0x5fc`); the first system repaired afterwards gets it back.
+  The consequence is the answer to "what if all other systems are 0": the hit roll only distinguishes hull and critical afterwards
+  (with 70 percent hull, 30 percent of the hits are critical).
+- **Systems missing** in the unit definition: points 0 and hit percentage 0 (switched off from the start, never re-enabled).
+  Template defaults for missing keys: 1 point, repair time 1. `SYSTEM_HITPOINTS_BONUS` (0 in the GOG configuration) is added to every system that has points.
+- **Repair** (0x4683d0): all five systems repair at the same time, one point every `repairTime / maxPoints x crewFactor x repairStrength`
+  seconds (the race value multiplies; checked with the real instruction: `DE F1` divides st0 by st1, so the time is proportional to the strength).
+  The crew factor is the race's `repairRed` at a crew fraction of at most `crewRedStatus`, else `repairYellow` at most `crewYellowStatus`, else 1.
+  The countdown is 0 while a system is at full health, so the first point lost to a hit that does not destroy the system is
+  repaired on the very next frame. A system switched off by damage is switched on again only when all points are back; then its hit percentage is restored.
+  A `TimedHyper` effect divides the time (not modelled: the divisor is 1).
+- **Shield recharge** (0x466b00): only with the shield system on and the ship not derelict; the delay timer (`shieldDelay`, set when a hit leaves
+  the shield at 0) runs down first and the rest of the frame recharges at `shieldRate` per second.
+- **Life support off:** every frame `crew x lifeSupportLoss x dt / 100 + min(dt, 1)` is lost, until the ship becomes derelict.
+- **Temporary disable** (special weapons) is a per-system timer that only runs while the system is off; the packet flags that set it are not modelled.
+
+Not covered by the checks: the original random number sequence (the seed is set at run time), the impact effect that every hit with
+systems damage spawns, the guard flags `+0x1b1`, `+0xc8` and `+0x678` (script flags), the disable flags of the damage packet, the
+`TimedHyper` effect.
+
+## Beaming and boarding (confirmed by emulation)
+
+`game/Boarding.*`, checked with `tools/boarding_check.py` (6 600 arrival cases and 8 300 transporter steps through the real functions,
+no deviation). Constants from the data section: range 300 (centre distance), interval 1.0 s, 5 crew per step.
+
+- **Transporter step** (Craft 0x467050, runs while the ship is not derelict or exploding): the timer counts down only while above 0; at
+  0 and with the beam flag set, the step runs. Target missing, centre distance above 300: stop. Enemy target (relation table entry 0):
+  its shield fraction must be at most 1 percent, and its recharge delay is reset to its `shieldDelay` every step. Friendly target: needs room
+  (crew below maximum). Then the source gives up 5 crew (`RemoveCrew`: the crew drops by 5 with the usual consequences, the party gets at most the old crew),
+  a boarding party is created (enemy: arrives after 1 s, friend: on the next update) and the timer is set to 1.0. The transport ends
+  after that step if `(crew - 5) / maxCrew` is not above the race's `crewRedStatus`.
+- **Arrival** (class `BoardingParty`, 0x55f750): the target needs a maximum crew of at least 1.
+  - Derelict target: the party's crew is added first (`AddCrew`, leftover lost); same team: the target takes over the party's race; enemy: the
+    target joins the party's team and race; ally of another team: nothing more.
+  - Friendly living target: crew is added, the leftover stays in the party.
+  - Hostile living target: `X = party crew x boardingStrength(party race) / boardingStrength(target race)`; the target loses X crew; if its crew was
+    below X the rest `(X - targetCrew) x strength(target) / strength(party)` captures it (the ship gets the party's team and race and the rest as crew).
+    If the target survives or the rest is 0, nothing changes hands (a target left with less than 1 crew becomes derelict).
+  - `boardingStrength` is a race value in the race definition (federation 1.0, Klingon 1.5, Romulan 0.75, Borg 1.75).
+- A derelict ship keeps its team and owner; nothing in the derelict handler (0x466ca0/0x466d80) writes the owner field (+0x194) or the team record, and the only writers of +0x194 are the object constructor (-1), SetOwner and the loader. The relation check (0x46e2a0) therefore still sees an enemy.
+- Weapon target validity (0x42faa0): after the relation check, a derelict target is rejected unless the attacker's player slot has flag +0xa8 set (0x472100). That flag is the AI-team flag: its setter (0x433220, two reference arguments int/bool) matches the exported `SetIsAITeam`. Confirmed by the exported name and signature; the lobby code that fills the flag was not traced further. Result: weapons of the human player never target derelict ships, computer players do.
+- Client behaviour: `Game::Hostile` follows this (derelict target allowed only when the attacker's team is not the human team). Earlier note that "nobody shoots derelicts" was wrong for computer players.
+- Not read: which ships may use the transport command and under which conditions (user interface level), the relation table itself (the client
+  treats equal teams as friends and all others as enemies), the station-capture effect (`0x5619a0`), the sound and beam effects.
+
+## Team relations, difficulty, cinematic requests
+
+- **Relations** (team record, entries at `+0x2c`, accessors 0x449430-0x449530, built for the game by 0x443b20): 0 enemy, 1 neutral, 2 ally.
+  Team 0 is neutral to everyone; otherwise teams of the same group (the "Team" column of the game setup) are allies and all others enemies.
+  The original keeps the group separate from the player number; the client uses the group as the team number, so allied players share a team number
+  (a deviation only visible when allies board each other's derelict ships: the original changes nothing, the client swaps the race). Code: `game/Teams.h`.
+- **Difficulty** (0x465151): a mode value 1 (easy) or 3 (hard) multiplies the damage taken by the human player's ships by `EASY_DAMAGE` (0.5) or `HARD_DAMAGE` (2.0)
+  from `RTS_CFG.h`; every other mode means factor 1. A further condition on a game-mode object (single player) was not read. The client has the factor
+  (`DifficultyDamageScale`, `Game::difficulty_mode`, default normal = 1) but no menu entry yet.
+- **Cinematic requests** (shot director, `0x47aef0`): the client now records the requests the original makes (`game/Cinematic.h`, `Game::cinematic_requests`): at the start of the dying
+  phase (14.0, dying timer, 1.5, 0, 3), from a fireball without ring (14.0, 1.0, 2.0, 3, 3) and from the shockwave (14.0, 1.0, 6.0, 3, 3). Nothing reads them yet;
+  the meaning of the numbers is unknown (named by position).
+

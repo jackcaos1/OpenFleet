@@ -33,8 +33,11 @@
 #include "core/Version.h"
 #include "render/ModelRenderer.h"
 #include "render/SpriteRenderer.h"
+#include "game/Boarding.h"
+#include "game/Cinematic.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
+#include "game/Teams.h"
 #include "game/Shell.h"
 #include "game/FireDemo.h"
 #include "render/EffectRenderer.h"
@@ -364,6 +367,9 @@ struct Game::Impl {
   bool move_armed = false;
   bool attack_armed = false;
   bool transport_armed = false;
+  std::vector<CinematicRequest> cinematic_requests;  // Anforderungen an die (noch fehlende) Kinosicht
+  int difficulty_mode = 2;  // Original [0x68dc64]: 1 leicht, 2 normal, 3 schwer; Auswahl im Client folgt (Vorgabe normal, Faktor 1)
+  int human_team = 1;       // Team des menschlichen Spielers (Spieler 1 der Spieleinstellung)
   mutable float mm_centre[2] = {0, 0};  // Zuordnung Minikarte <-> Welt (zuletzt in BuildHudState berechnet)
   mutable float mm_extent = 0;
   std::vector<Projectile> projectiles;
@@ -431,6 +437,7 @@ struct Game::Impl {
     fx.clear();
     fireballs.clear();
     shockwaves.clear();
+    parties.clear();
     spawn_models.clear();
     scene_hidden.clear();
     map_radius.clear();
@@ -568,10 +575,15 @@ struct Game::Impl {
       map_obstacles.push_back(ob);
     }
     // Pfadraster: Zellgroesse HIGHEST_QUADTREE_GRID_RESOLUTION (50). Asteroidenfeld: Quadrat mit Halbkante ASTEROID_BELT_PATHING_DISTANCE/2 (150/2).
-    float lo[2] = {-1500, -1500}, hi[2] = {1500, 1500};
-    for (const BznObject& o : map.objects) {
-      lo[0] = std::min(lo[0], o.pos[0] - 1000); hi[0] = std::max(hi[0], o.pos[0] + 1000);
-      lo[1] = std::min(lo[1], -o.pos[2] - 1000); hi[1] = std::max(hi[1], -o.pos[2] + 1000);   // Originalsystem: z = -z_GL
+    // Original (0x44abb0 liest die Grenzen aus der Karte nach 0x6343f0..0x634404, 0x408e80/0x4093b0 bilden daraus das Raster): Kartengrenzen x und z des Kopfes,
+    // Originalsystem (z wie in der Datei). Nur wenn die Datei keine gueltigen Grenzen hat, dient die Ausdehnung der Objekte als Notbehelf.
+    float lo[2] = {map.bounds[0], map.bounds[4]}, hi[2] = {map.bounds[1], map.bounds[5]};
+    if (!(hi[0] > lo[0] && hi[1] > lo[1])) {
+      lo[0] = lo[1] = -1500; hi[0] = hi[1] = 1500;
+      for (const BznObject& o : map.objects) {
+        lo[0] = std::min(lo[0], o.pos[0] - 1000); hi[0] = std::max(hi[0], o.pos[0] + 1000);
+        lo[1] = std::min(lo[1], -o.pos[2] - 1000); hi[1] = std::max(hi[1], -o.pos[2] + 1000);   // Originalsystem: z = -z_GL
+      }
     }
     path_grid.Init(lo[0], lo[1], hi[0], hi[1], 50.0f);
     for (const MapObstacle& mo : map_obstacles)
@@ -668,6 +680,12 @@ struct Game::Impl {
     if (val("BLACKHOLE_PATHING_SAFETY_COEFFICIENT", &f)) blackhole_coef = f;
     if (val("SHIP_COMBAT_FLOOR", &f)) w.floor = f;
     if (val("SHIP_COMBAT_CEILING", &f)) w.ceiling = f;
+    CombatConfig& cc = CombatCfg();  // Kampfwerte (Exe-Vorgaben gelten, wenn ein Schluessel fehlt)
+    if (val("USE_SYSTEM_HITPOINTS", &f)) cc.use_system_hitpoints = f != 0;
+    if (val("SYSTEM_HITPOINTS_BONUS", &f)) cc.system_hitpoints_bonus = static_cast<int>(f);
+    if (val("SHIELD_DAMAGE_PROTECTION", &f)) cc.shield_damage_protection = f;
+    if (val("EASY_DAMAGE", &f)) cc.easy_damage = f;
+    if (val("HARD_DAMAGE", &f)) cc.hard_damage = f;
   }
 
   void BuildStars() {
@@ -831,12 +849,27 @@ struct Game::Impl {
   void RestoreState(Spawned* sp, const SaveObject& so) {
     Health& h = sp->hp;
     h.shield = std::max(0.0f, std::min(so.shield, h.shield_max));
-    h.shield_was_zero = h.shield <= 0;
+    h.delay_left = so.shield_delay_left;
     h.crew = std::max(0.0f, std::min(so.crew, h.crew_max));
-    for (int i = 0; i < 5; ++i) h.sys[SysOfFile(i)] = std::max(0.0f, std::min(static_cast<float>(so.sys[i]), h.sys_max));
-    if (h.derelict()) {
+    for (int i = 0; i < 5; ++i) {
+      SystemBlock& b = h.sys[SysOfFile(i)];
+      if (so.has_sysx) {  // vollstaendiger Zustand wie im Original (CraftSystem)
+        const SaveObject::SysState& s = so.sysx[i];
+        b.active = s.active;
+        b.points = s.points;
+        b.hit_pct = s.hit_pct;
+        b.per_point = s.per_point;
+        b.countdown = s.countdown;
+        b.disable_timer = s.disable_timer;
+        b.script_disabled = s.permanent;
+      } else {  // aeltere Staende dieses Clients: nur Punkte; eingeschaltet, solange Punkte uebrig sind
+        b.points = std::max(0, so.sys[i]);
+        b.active = b.points > 0;
+      }
+    }
+    h.derelict = h.crew_max > 0 && h.crew < 1.0f;
+    if (h.derelict) {
       sp->derelict = true;
-      sp->team = 0;
     }
   }
 
@@ -928,7 +961,20 @@ struct Game::Impl {
       so.shield = sp.hp.shield;
       so.shield_max = sp.hp.shield_max;
       so.crew = sp.hp.crew;
-      for (int i = 0; i < 5; ++i) so.sys[i] = static_cast<int>(std::lround(sp.hp.sys[SysOfFile(i)]));
+      so.shield_delay_left = sp.hp.delay_left;
+      so.has_sysx = true;
+      for (int i = 0; i < 5; ++i) {
+        const SystemBlock& b = sp.hp.sys[SysOfFile(i)];
+        so.sys[i] = b.points;
+        SaveObject::SysState& s = so.sysx[i];
+        s.active = b.active;
+        s.points = b.points;
+        s.hit_pct = b.hit_pct;
+        s.per_point = b.per_point;
+        s.countdown = b.countdown;
+        s.disable_timer = b.disable_timer;
+        s.permanent = b.script_disabled;
+      }
       if (sp.team > 0 && sp.team < kSaveTeams) g.teams[sp.team].exists = true;
       g.objects.push_back(so);
     }
@@ -1298,23 +1344,28 @@ struct Game::Impl {
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
     s->odf_l = ToLowerAscii(odf);
     {
-      ShipRules q;
+      HealthSpec q;
       const SubsystemDef* sd[kSysCount] = {&u.shield_generator, &u.engines, &u.life_support, &u.sensors, &u.weapons_sys};
       for (int k = 0; k < kSysCount; ++k) {
-        if (sd[k]->hit_percent > 0) q.hit_pct[k] = sd[k]->hit_percent;
-        if (sd[k]->repair_time > 0) q.repair_time[k] = sd[k]->repair_time;
-        if (sd[k]->crew_loss > 0) q.crew_loss[k] = sd[k]->crew_loss;
-        if (sd[k]->hit_points > 0) q.sys_points = static_cast<float>(sd[k]->hit_points);
+        q.sys[k].points = sd[k]->hit_points;
+        q.sys[k].hit_pct = sd[k]->hit_percent;
+        q.sys[k].crew_loss = sd[k]->crew_loss;
+        q.sys[k].repair_time = sd[k]->repair_time;
       }
-      if (u.hull.hit_percent > 0) q.hull_pct = u.hull.hit_percent;
+      q.hull_pct = u.hull.hit_percent;
       q.critical_pct = u.critical_percent;
-      q.life_loss = u.life_support_loss;
+      q.life_support_loss = u.life_support_loss;
+      q.shield_max = u.max_health;
+      q.shield_rate = u.shield_rate;
+      q.shield_delay = u.shield_delay;
+      q.crew_max = static_cast<float>(u.crew_cost);
       RaceDef rd;
       LoadRaceDef(*odf_lib, u.race, &rd);
       RaceRules rr;
       rr.repair_strength = rd.repair_strength; rr.crew_yellow = rd.crew_yellow; rr.crew_red = rd.crew_red;
       rr.repair_yellow = rd.repair_yellow; rr.repair_red = rd.repair_red; rr.weapon_yellow = rd.weapon_yellow; rr.weapon_red = rd.weapon_red;
-      InitHealth(&s->hp, u.max_health, u.shield_rate, u.shield_delay > 0 ? u.shield_delay : 3.0f, u.max_health > 0 ? 2.0f * u.max_health : 100.0f, static_cast<float>(u.crew_cost), q, rr);
+      rr.boarding_strength = rd.boarding_strength;
+      InitHealth(&s->hp, q, rr);
     }
     if (u.range_scan > 0) s->scan = u.range_scan;
     if (u.damaged_scan > 0) s->scan_damaged = u.damaged_scan;
@@ -1568,7 +1619,12 @@ struct Game::Impl {
     return (it != spawn_models.end() ? it->second.radius : 20.0f) * s.scale;
   }
 
-  bool Hostile(const Spawned& a, const Spawned& b) const { return a.team > 0 && b.team > 0 && a.team != b.team && b.hp.alive() && !b.derelict; }
+  // Feind laut Beziehungstabelle (game/Teams.h); herrenlose Derelict-Schiffe beschiesst niemand (Vorgabe des Nutzers, im Original nicht gepruefte Zielwahl)
+  // Original 0x42faa0: relation check, then a derelict target is refused unless the attacker's player slot is flagged as AI (+0xa8, set by
+  // SetIsAITeam). So computer players still shoot at derelict enemies, the human player's weapons never target them.
+  bool Hostile(const Spawned& a, const Spawned& b) const {
+    return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && (!b.derelict || a.team != human_team);
+  }
 
   static float Dist3(const float a[3], const float b[3]) {
     const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
@@ -1578,7 +1634,9 @@ struct Game::Impl {
   bool CanFly(const Spawned& s) const { return s.movable && !s.derelict && s.hp.alive() && s.hp.sys_ok(kEngines); }
 
   // Treffer anwenden; Ziel und Nachbarn desselben Teams gelten danach als angegriffen (Alarmstufen).
-  void HitShip(Spawned& t, unsigned owner, const HitInfo& hi) {
+  void HitShip(Spawned& t, unsigned owner, const HitInfo& hi0) {
+    HitInfo hi = hi0;
+    if (t.team == human_team) hi.damage_scale = DifficultyDamageScale(difficulty_mode);  // Original 0x465151: nur Schiffe des Spielers
     ApplyHit(&t.hp, &rng, hi);
     if (t.team <= 0) return;
     t.attacker_id = owner;
@@ -1591,8 +1649,7 @@ struct Game::Impl {
   }
 
   void MakeDerelict(Spawned& s) {
-    s.derelict = true;
-    s.team = 0;
+    s.derelict = true;  // das Schiff behaelt sein Team (Original 0x466d80 aendert es nicht)
     s.target_id = 0;
     s.beam_id = 0;
     s.auto_move = 0;
@@ -1600,52 +1657,64 @@ struct Game::Impl {
     Message(s.label + " hat keine Besatzung mehr und treibt fuehrerlos.");
   }
 
-  // Transporter: alle 1 s werden Leute zum Ziel gebeamt (Reichweite = rangeScan). Befreundet/herrenlos: Besatzung wird uebergeben,
-  // das Schiff gehoert dann dem Absender. Feind: nur bei gesenktem Schild, Enterkommando; bei 0 Besatzung geht das Schiff an den Enterer.
-  // Annahmen: 10 Mann je Sekunde; Entermannschaft verliert halb so viele Leute, wie sie dem Gegner nimmt.
+  // Transporter (Original 0x467050): wenn der Zaehler abgelaufen ist, nimmt die Quelle 5 Leute ab und bildet eine Entermannschaft; Freunde
+  // bekommen sie sofort, Feinde nach 1 s (ihr Schild muss unten sein, ueber 300 Abstand endet der Transport). Ankunft: ArriveBoardingParty.
+  // Nicht aus dem Original: wie der Befehl ausgeloest wird und welche Schiffe ihn bekommen (Bedienung).
+  struct Party {
+    unsigned src = 0, target = 0;
+    float crew = 0, delay = 0;
+    bool enemy = false;
+    int team = 0;
+    RaceRules race;
+  };
+  std::vector<Party> parties;
+
   void DoBeam(Spawned& s) {
-    constexpr float kBeamRate = 10.0f;
     const int ti = FindById(s.beam_id);
-    if (ti < 0 || s.derelict || s.hp.crew <= 1.0f) { s.beam_id = 0; return; }
+    if (ti < 0 || s.derelict || !s.hp.alive() || !spawned[static_cast<size_t>(ti)].hp.alive()) { s.beam_id = 0; return; }
     Spawned& t = spawned[static_cast<size_t>(ti)];
-    if (Dist3(s.st.pos, t.st.pos) - RadiusOf(t) > s.scan) {
-      Message("Transport: Ziel ausser Reichweite.");
-      s.beam_id = 0;
-      return;
+    const bool enemy = IsEnemyTeam(s.team, t.team);
+    const BeamStep r = TransporterStep(&s.hp, &t.hp, Dist3(s.st.pos, t.st.pos), enemy);
+    if (r.created) {
+      Party p;
+      p.src = s.id;
+      p.target = t.id;
+      p.crew = r.party_crew;
+      p.delay = enemy ? kBoardingDelayEnemy : 0.0f;
+      p.enemy = enemy;
+      p.team = s.team;
+      p.race = s.hp.race;
+      parties.push_back(p);
+      s.beam_timer = kBeamInterval;
     }
-    const float give = std::min(kBeamRate, s.hp.crew - 1.0f);
-    if (t.derelict || t.team == s.team) {
-      const float room = std::max(0.0f, t.hp.crew_max - t.hp.crew);
-      const float n = std::min(give, room);
-      if (n <= 0) { s.beam_id = 0; return; }
-      s.hp.crew -= n;
-      t.hp.crew += n;
-      if (t.derelict) {
-        t.derelict = false;
-        t.team = s.team;
-        t.alert = 1;
-        Message(t.label + " uebernommen.");
-      }
-    } else if (t.team > 0) {
-      if (t.hp.shield_max > 0 && t.hp.shield > 0) {
-        Message("Transport: Schild des Feindes ist noch oben.");
-        s.beam_id = 0;
-        return;
-      }
-      s.hp.crew -= give * 0.5f;
-      t.hp.crew -= give;
-      if (t.hp.crew <= 0) {
-        t.hp.crew = give * 0.5f;
-        t.team = s.team;
-        t.target_id = 0;
-        t.derelict = false;
-        t.alert = 1;
-        StopShip(&t.st);
-        Message(t.label + " geentert!");
-        s.beam_id = 0;
-      }
-    } else {
+    if (r.stop) {
       s.beam_id = 0;
+      Message("Transport beendet.");
+    }
+  }
+
+  // Ankunft der Entermannschaften (Original 0x55f750); Rassenwechsel und Besitzerwechsel wie dort.
+  void StepParties(float dt) {
+    for (size_t i = 0; i < parties.size();) {
+      Party& p = parties[i];
+      p.delay -= dt;
+      if (p.delay >= 0) { ++i; continue; }
+      const int ti = FindById(p.target);
+      if (ti >= 0) {
+        Spawned& t = spawned[static_cast<size_t>(ti)];
+        const BoardResult r = ArriveBoardingParty(&t.hp, t.team, t.hp.race.boarding_strength, p.crew, p.race.boarding_strength, p.team, p.enemy);
+        if (r.race_changed) t.hp.race = p.race;
+        if (r.owner_changed) {
+          t.hp.race = p.race;
+          t.team = p.team;
+          t.target_id = 0;
+          t.auto_move = 0;
+          t.beam_id = 0;
+          t.alert = 1;
+          Message(t.label + (p.enemy ? " geentert!" : " uebernommen."));
+        }
+      }
+      parties.erase(parties.begin() + static_cast<long>(i));
     }
   }
 
@@ -1664,7 +1733,7 @@ struct Game::Impl {
     return best;
   }
 
-  // Gefecht (Originalregeln siehe Combat.h): Schild laedt auf, Besatzung/Systeme, Wracks, Alarmstufen
+  // Gefecht (Originalregeln siehe Combat.h): Schild laedt auf, Besatzung/Systeme, Derelict-Schiffe, Alarmstufen
   // (Rot: feuert auf alles Sichtbare, verfolgt begrenzt; Gelb: nur wenn selbst/Nachbarn angegriffen; Gruen: flieht, feuert nicht; Abwarten: kein Ziel),
   // Waffen mit Besatzungsstatus-Verzoegerung, Strahlen treffen sofort, Torpedos fliegen. Annahmen: Verfolgungsradius 1,5 x Sensorreichweite,
   // Nachbarn = 400 m, Angriffsstatus 10 s; Schussfelder werden nicht beachtet.
@@ -1679,15 +1748,12 @@ struct Game::Impl {
     for (Spawned& s : spawned) {
       StepHealth(&s.hp, dt);
       s.attacked_t = std::max(0.0f, s.attacked_t - dt);
-      if (s.hp.derelict() && !s.derelict) MakeDerelict(s);
-      if (s.beam_id) {
-        s.beam_timer -= dt;
-        if (s.beam_timer <= 0) {
-          s.beam_timer = 1.0f;
-          DoBeam(s);
-        }
-      }
+      if (s.hp.derelict && !s.derelict) MakeDerelict(s);
+      if (!s.hp.derelict && s.derelict) s.derelict = false;  // wieder bemannt (Beamen)
+      if (s.beam_timer > 0) s.beam_timer -= dt;             // Original 0x46708a: zaehlt nur, solange er ueber 0 ist
+      if (s.beam_id && s.beam_timer <= 0 && !s.derelict) DoBeam(s);
     }
+    StepParties(dt);
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& s = spawned[i];
       if (s.derelict || !s.hp.alive()) continue;
@@ -1880,6 +1946,13 @@ struct Game::Impl {
         for (int k = 0; k < 3; ++k) w.sw.pos[k] = f.pos[k];
         w.sw.scale = f.radius;
         shockwaves.push_back(w);
+        {  // Original 0x51b454: Kameraanforderung fuer die Schockwelle
+          CinematicRequest cr;
+          cr.duration = 1.0f;
+          cr.value2 = 6.0f;
+          cr.int0 = cr.int1 = 3;
+          PostCinematic(&cinematic_requests, cr);
+        }
       }
     }
     for (ShockInst& w : shockwaves) {
@@ -1894,21 +1967,29 @@ struct Game::Impl {
     fireballs.erase(std::remove_if(fireballs.begin(), fireballs.end(), [](const Fireball& f) { return f.age >= f.life; }), fireballs.end());
     fx.erase(std::remove_if(fx.begin(), fx.end(), [](const Shot& sh) { return sh.age >= sh.life; }), fx.end());
     // Zerstoerte Objekte (Original Craft::Explode/Update, docs/formats/ship-health.md): Auswahl endet sofort, das Schiff fliegt weiter
-    // (Antrieb gilt als aus, der Drehimpuls bleibt), alle 0,05 s ein kleiner Effekt (systemexpl1..6), nach ~3 s die grosse Explosion
-    // (hier Sprite "bigorange" statt Xplode-Modell, Ton und Dauer aus der fireball-ODF) und Entfernen.
-    // Annahmen: Feld +0x60 = Radius, Effektgroesse in Weltenheiten.
+    // (Antrieb gilt als aus, der Drehimpuls bleibt), alle 0,05 s ein kleiner Effekt (systemexpl1..7 an einem Modelleckpunkt), nach 3 oder 5 s
+    // die grosse Explosion (Fireball-Modell Xplode samt Schockwelle, Ton und Dauer aus der fireball-ODF) und Entfernen.
     bool sel_changed = false, any_gone = false;
     for (Spawned& s : spawned) {
       if (s.hp.alive()) continue;
       if (!s.dying) {
         s.dying = true;
         s.die = MakeDying(std::sqrt(s.st.vel[0] * s.st.vel[0] + s.st.vel[1] * s.st.vel[1] + s.st.vel[2] * s.st.vel[2]), s.hero);
+        {  // Original 0x466090: Kameraanforderung beim Start der Sterbephase (Kinosicht fehlt noch)
+          CinematicRequest cr;
+          cr.duration = s.die.left;
+          cr.value2 = 1.5f;
+          cr.int0 = 0;
+          cr.int1 = 3;
+          cr.object = s.id;
+          PostCinematic(&cinematic_requests, cr);
+        }
         s.target_id = 0;
         s.beam_id = 0;
         s.auto_move = 0;
         if (s.sel || s.id == sel_id) sel_changed = true;
         s.sel = false;
-        Message(s.label + " zerstoert.");
+        Message(s.label + " zerstoert (Sterbephase " + std::to_string(static_cast<int>(s.die.left)) + " s).");
       }
       bool done = false;
       const int puffs = StepDying(&s.die, dt, &done);
@@ -1939,6 +2020,12 @@ struct Game::Impl {
       }
       if (!done) continue;
       any_gone = true;
+      {  // Diagnose (Debug-Build): Radius gegen shockwaveMinimum, Zahl der Sterbeeffekte
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "Explosion: Radius %.0f, Ringminimum %.0f, Ring %s, Effekte %d", RadiusOf(s), s.shock.minimum,
+                      (s.has_shock && RadiusOf(s) > s.shock.minimum) ? "ja" : "nein", static_cast<int>(fx.size()));
+        Message(buf);
+      }
       if (!s.expl_sound.empty()) PlayEffect(s.expl_sound, 0.6f);
       // Original: das fireball-Objekt (Modell dbName, hier Xplode.sod aus acht Sprite-Knoten); das Modell wird mit Faktor 1,0 geladen,
       // der Objektmassstab (Schiffsradius) bestimmt nur die Schockwelle (0x51b290/0x51b330)
@@ -1961,6 +2048,14 @@ struct Game::Impl {
           for (int c = 0; c < 3; ++c) f.axis[c] = v[c] * inv;
         }
         f.shock_pending = s.has_shock && RadiusOf(s) > s.shock.minimum;
+        if (!f.shock_pending) {  // Original 0x51b39a: ohne Schockwelle (oder zu klein) fordert der Feuerball selbst die Kamera an
+          CinematicRequest cr;
+          cr.duration = 1.0f;
+          cr.value2 = 2.0f;
+          cr.int0 = cr.int1 = 3;
+          cr.object = s.id;
+          PostCinematic(&cinematic_requests, cr);
+        }
         f.shock = s.shock;
         fireballs.push_back(f);
         fireball_ok = true;
@@ -2545,6 +2640,7 @@ struct Game::Impl {
       SpawnAt(p + "const", sl.team, cpos, false, false);
       if (i == 0) {
         hud_race = sl.race;
+        human_team = sl.team;
         LoadHud();
         map_target[0] = cx; map_target[1] = 0; map_target[2] = cz;
         map_dist = 2200.0f;
@@ -2806,7 +2902,7 @@ struct Game::Impl {
       case UiAction::Transport:
         transport_armed = !transport_armed;
         attack_armed = move_armed = false;
-        if (transport_armed) Message("Ziel zum Beamen antippen (Reichweite 500).");
+        if (transport_armed) Message("Ziel zum Beamen antippen (Reichweite 300).");
         break;
       case UiAction::StandDown:
         for (Spawned& x : spawned)
@@ -3217,7 +3313,7 @@ void Game::OnFrame(double dt) {
         }
       }
       for (const Impl::Spawned& sp : s.spawned) {  // Schild-/Huellenbalken ueber beschaedigten oder ausgewaehlten Objekten
-        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && sp.hp.hull >= sp.hp.hull_max && !sp.hp.damaged())) continue;
+        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
         const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
         const float top[3] = {sp.st.pos[0], sp.st.pos[1] + rw, sp.st.pos[2]};

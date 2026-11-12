@@ -30,6 +30,7 @@ class Machine:
         self.hooks = {}
         uc.hook_add(UC_HOOK_CODE, self._code)
         self.fsbase = 0x7ff00000
+        self.fpcw = 0x27f   # x87-Steuerwort fuer call(): 0x27f = 53 Bit, 0x7f = 24 Bit (Einzelgenauigkeit)
 
     def _code(self, uc, addr, size, ud):
         b = bytes(uc.mem_read(addr, min(size, 7)))
@@ -64,7 +65,7 @@ class Machine:
         uc.reg_write(UC_X86_REG_ESP, esp); uc.reg_write(UC_X86_REG_EBP, 0)
         uc.reg_write(UC_X86_REG_ECX, ecx)
         # x87 Praezision: 53/64 bit (Standard-FPU-CW 0x27f = 53 Bit wie von MSVC-Laufzeit gesetzt)
-        try: uc.reg_write(UC_X86_REG_FPCW, 0x27f)
+        try: uc.reg_write(UC_X86_REG_FPCW, self.fpcw)
         except Exception: pass
         uc.mem_write(self.fsbase, b'\xff\xff\xff\xff')
         try:

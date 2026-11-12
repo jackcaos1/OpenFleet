@@ -47,13 +47,18 @@ Verification levels:
 - [ ] Potential field / `Collision.cfg` (the construction ship flies through the starbase)
 - [ ] Asteroid field: check whether the pathfinder makes the interim "hard sphere" workaround unnecessary
 
-### Combat (damage model, debug-31)
-- [ ] Assumption: 1 system point per penetrating hit
-- [ ] Assumption: beam rate 10 crew/s; boarding: the attacker loses half as many as the defender
+### Combat (damage model: rewritten after the original, branch `night/health-model`)
+- [x] Hit roll, damage packet, system points, hit-percentage redistribution, repair, shield recharge, derelict handling: read from the executable and
+  checked against it by emulation (`tools/health_check.py`, 6000 scenarios, no deviation). Details: `docs/formats/ship-health.md`.
+- [x] Beaming and boarding (5 crew per second, range 300, boarding strength by race, capture): same method (`tools/boarding_check.py`, no deviation).
+- [x] Destruction sequence (dying phase, small explosions that follow the ship, fireball model, shockwave ring): read from the executable; the visual
+  parts are checked only by compiling, not on a device.
+- [ ] Not modelled: difficulty damage factor (0.5 / 2.0 for the player's ships), temporary system disabling by special weapons, the relation table between teams
+  (client: equal team = friend), the `TimedHyper` repair effect, hit-impact effect, the fixed seed of the dice (the original seeds at run time)
+- [ ] Unknown: whether enemies fire at derelict ships; which ships may use the transport command
 - [ ] Assumption: wireframe part i = system i
 - [ ] Firing arcs are ignored
-- [ ] The explosion is a sprite ("bigorange"), not the original model
-- [ ] **Bug:** a ship under fire becomes unselectable, tumbles and never explodes
+- [ ] Shockwave ring and fireball only checked by compiling, not on a device
 
 ### HUD and menus
 - [ ] HUD only checked in the preview render, not on a device
@@ -91,6 +96,6 @@ Verification levels:
 ## 5. Suggested order
 
 1. Game core: economy and AI block everything else; the AI is the largest reverse-engineering package.
-2. Reduce the combat assumptions with the same emulation method as for the pathfinder.
+2. Reduce the remaining combat assumptions (weapons, ordnance, firing arcs) with the same emulation method as for the pathfinder and the health model.
 3. Renderer deviations (LOD, `oq`, `damage`): manageable and well documented.
 4. A device test pass before new features.

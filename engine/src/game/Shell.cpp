@@ -76,19 +76,19 @@ HudDraw SubQuad(const std::string& tex, float sx0, float sy0, float sx1, float s
 // stehen uebereinander, darunter die Tasten (Zurueck / Hauptmenue nebeneinander, Start darunter). Zeichnung und Trefferflaechen folgen derselben Abbildung.
 void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, float H, const std::string& pressed, const HudData* font, const SkirmishView* sk) {
   static const float kInk[3] = {0.05f, 0.04f, 0.03f}, kWhite[3] = {1, 1, 1}, kGreen[3] = {0.55f, 1.0f, 0.65f};
-  constexpr float kSplit = 333.0f, kHalfH = 445.0f, kCanvasW = 330.0f, kCanvasH = 960.0f;
+  constexpr float kLeftW = 345.0f, kSplit = 347.0f, kHalfH = 415.0f, kCanvasW = 345.0f, kCanvasH = 905.0f;  // Schnitt zwischen den Rahmen bei x 345..347; Chat-Zeile unten (y > 415) entfaellt
   Frame fl = base, fr = base, fb = base;  // links, rechts, Tasten
   if (portrait) {
     const float sc = std::min(W / kCanvasW, H / kCanvasH);
     const float ox0 = 0.5f * (W - kCanvasW * sc), oy0 = 0.5f * (H - kCanvasH * sc);
     fl.s = fr.s = fb.s = sc;
     fl.ox = fb.ox = ox0; fl.oy = fb.oy = oy0;
-    fr.ox = ox0 + (11.5f - kSplit) * sc;
+    fr.ox = ox0 + (0.5f * (kCanvasW - (640.0f - kSplit)) - kSplit) * sc;
     fr.oy = oy0 + kHalfH * sc;
-    L->draws.push_back(SubQuad("bitmaps/multiset/mpsBG.bmp", 0, 0, kSplit - 3.0f, kHalfH, fl.ox, fl.oy, (kSplit - 3.0f) * sc, kHalfH * sc));
+    L->draws.push_back(SubQuad("bitmaps/multiset/mpsBG.bmp", 0, 0, kLeftW, kHalfH, fl.ox, fl.oy, kLeftW * sc, kHalfH * sc));
     L->draws.push_back(SubQuad("bitmaps/multiset/mpsBG.bmp", kSplit, 0, 640, kHalfH, fr.ox + kSplit * sc, fr.oy, (640 - kSplit) * sc, kHalfH * sc));
   }
-  auto F = [&](float x) -> const Frame& { return portrait && x >= kSplit - 8.0f ? fr : fl; };
+  auto F = [&](float x) -> const Frame& { return portrait && x >= 360.0f ? fr : fl; };
   SkirmishView empty;
   if (!sk) sk = &empty;
   Slot(L, F(64), font, 64, 6, 178, 20, sk->title, kWhite, false, "", true, false, false);
@@ -123,7 +123,7 @@ void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, fl
   Slot(L, fr, font, 385, 272, 128, 20, sk->btn_select_map, kInk, true, "select_map", true, false, false);
   for (size_t i = 0; i < sk->info.size() && i < 12; ++i) Slot(L, fl, font, 12, 258.0f + 13.0f * static_cast<float>(i), 308, 12, sk->info[i], kWhite, false, "", true, false, false);
   // Tasten: Original unten in einer Reihe (6 / 124 / 524, y 446), im Hochformat Zurueck und Hauptmenue nebeneinander, Start darunter (gestaucht)
-  const float py1 = portrait ? 890.0f : 446.0f, py2 = portrait ? 924.0f : 446.0f;
+  const float py1 = portrait ? 836.0f : 446.0f, py2 = portrait ? 870.0f : 446.0f;
   const float xp = portrait ? 30.0f : 6.0f, xm = portrait ? kCanvasW - 30.0f - 112.0f : 524.0f, xl = portrait ? 15.0f : 124.0f, wl = portrait ? kCanvasW - 30.0f : 395.0f;
   Plate(L, fb, "navback", pressed == "back" ? 2 : 1, xp, py1, 112, 30);
   Slot(L, fb, font, xp, py1 + 8, 112, 14, sk->btn_prev, kInk, true, "back", true, false, false);

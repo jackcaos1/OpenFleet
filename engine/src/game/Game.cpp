@@ -1719,7 +1719,7 @@ struct Game::Impl {
     return best;
   }
 
-  // Gefecht (Originalregeln siehe Combat.h): Schild laedt auf, Besatzung/Systeme, Wracks, Alarmstufen
+  // Gefecht (Originalregeln siehe Combat.h): Schild laedt auf, Besatzung/Systeme, Derelict-Schiffe, Alarmstufen
   // (Rot: feuert auf alles Sichtbare, verfolgt begrenzt; Gelb: nur wenn selbst/Nachbarn angegriffen; Gruen: flieht, feuert nicht; Abwarten: kein Ziel),
   // Waffen mit Besatzungsstatus-Verzoegerung, Strahlen treffen sofort, Torpedos fliegen. Annahmen: Verfolgungsradius 1,5 x Sensorreichweite,
   // Nachbarn = 400 m, Angriffsstatus 10 s; Schussfelder werden nicht beachtet.
@@ -1946,9 +1946,8 @@ struct Game::Impl {
     fireballs.erase(std::remove_if(fireballs.begin(), fireballs.end(), [](const Fireball& f) { return f.age >= f.life; }), fireballs.end());
     fx.erase(std::remove_if(fx.begin(), fx.end(), [](const Shot& sh) { return sh.age >= sh.life; }), fx.end());
     // Zerstoerte Objekte (Original Craft::Explode/Update, docs/formats/ship-health.md): Auswahl endet sofort, das Schiff fliegt weiter
-    // (Antrieb gilt als aus, der Drehimpuls bleibt), alle 0,05 s ein kleiner Effekt (systemexpl1..6), nach ~3 s die grosse Explosion
-    // (hier Sprite "bigorange" statt Xplode-Modell, Ton und Dauer aus der fireball-ODF) und Entfernen.
-    // Annahmen: Feld +0x60 = Radius, Effektgroesse in Weltenheiten.
+    // (Antrieb gilt als aus, der Drehimpuls bleibt), alle 0,05 s ein kleiner Effekt (systemexpl1..7 an einem Modelleckpunkt), nach 3 oder 5 s
+    // die grosse Explosion (Fireball-Modell Xplode samt Schockwelle, Ton und Dauer aus der fireball-ODF) und Entfernen.
     bool sel_changed = false, any_gone = false;
     for (Spawned& s : spawned) {
       if (s.hp.alive()) continue;

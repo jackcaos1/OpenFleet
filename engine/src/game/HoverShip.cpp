@@ -78,8 +78,11 @@ void HoverShipStep(HoverShip* h, ShipState* ss, bool can_fly, float dt, const st
       }
       constexpr float kPathLead = 150.0f;   // pathLeadDistance der Klassen-ODF (Vorgabe 150)
       while (h->path_idx + 1 < h->path.size()) {
+        // Original 0x42ded0: dreidimensionaler Abstand zum Wegpunkt, Zwischenpunkte des Planers liegen auf (Decke + Boden) / 2; der Wegpunkt zaehlt als
+        // erreicht, wenn der quadrierte Abstand unter pathLeadDistance^2 liegt
         const float wx = h->path[h->path_idx].x - s.pos[0], wz = h->path[h->path_idx].z - s.pos[2];
-        if (wx * wx + wz * wz >= kPathLead * kPathLead) break;
+        const float wy = 0.5f * (HoverWorld().ceiling + HoverWorld().floor) - s.pos[1];
+        if (wx * wx + wy * wy + wz * wz >= kPathLead * kPathLead) break;
         ++h->path_idx;
       }
       if (h->path_idx < h->path.size()) { t[0] = h->path[h->path_idx].x; t[2] = h->path[h->path_idx].z; }

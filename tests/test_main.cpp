@@ -21,6 +21,7 @@
 #include "game/MapScene.h"
 #include "game/Ui.h"
 #include "game/Hud.h"
+#include "game/Boarding.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
 #include "game/ShipSim.h"
@@ -1176,6 +1177,84 @@ void TestCombat() {
   CHECK(RollHit(&r, 1.0f) && !RollHit(&r, 0.0f));
 }
 
+void TestBoarding() {
+  using namespace fleet;
+  CfgScope cfg;
+  RaceRules race;
+  auto make = [&](float crew, float crew_max) {
+    HealthSpec sp;
+    sp.crew_max = crew_max;
+    sp.shield_max = 100;
+    sp.shield_delay = 3.0f;
+    for (int i = 0; i < kSysCount; ++i) sp.sys[i].points = 10;
+    Health h;
+    InitHealth(&h, sp, race);
+    h.crew = crew;
+    return h;
+  };
+  // Besatzung hinzufuegen: der Ueberschuss kommt zurueck (0x467570)
+  {
+    Health h = make(90, 100);
+    CHECK(Near(AddCrew(&h, 25.0f), 15.0f) && h.crew == 100.0f);
+    CHECK(AddCrew(&h, 1.0f) == 1.0f);
+  }
+  // Besatzung abziehen: zurueck kommt hoechstens die alte Besatzung (0x4674d0), darunter wird das Schiff Derelict
+  {
+    Health h = make(3, 100);
+    CHECK(Near(RemoveCrew(&h, 5.0f), 3.0f) && h.derelict && h.crew == 0.0f);
+    Health g = make(50, 100);
+    CHECK(RemoveCrew(&g, 5.0f) == 5.0f && g.crew == 45.0f);
+    Health z = make(0, 0);
+    CHECK(RemoveCrew(&z, 5.0f) == 0.0f);
+  }
+  // Transporter-Schritt (0x467050)
+  {
+    Health src = make(100, 100), tgt = make(50, 100);
+    CHECK(TransporterStep(&src, &tgt, 301.0f, false).stop && src.crew == 100.0f);  // zu weit
+    Health full = make(100, 100);
+    CHECK(TransporterStep(&src, &full, 100.0f, false).stop && src.crew == 100.0f);  // Freund ohne Platz
+    BeamStep st = TransporterStep(&src, &tgt, 100.0f, false);
+    CHECK(!st.stop && st.created && st.party_crew == 5.0f && src.crew == 95.0f && !st.enemy);
+    // Feind: der Schild muss (fast) unten sein, danach bleibt er unten
+    Health foe = make(50, 100);
+    CHECK(TransporterStep(&src, &foe, 100.0f, true).stop && src.crew == 95.0f);
+    foe.shield = 0.5f;  // 0,5 %
+    st = TransporterStep(&src, &foe, 100.0f, true);
+    CHECK(!st.stop && st.created && st.enemy && Near(foe.delay_left, 3.0f) && src.crew == 90.0f);
+    // Rote Besatzung der Quelle: nach dem Schritt waere die naechste Runde im roten Bereich -> Ende (die Mannschaft ist aber gebildet)
+    Health weak = make(24, 100);
+    st = TransporterStep(&weak, &tgt, 100.0f, false);
+    CHECK(st.created && st.stop && weak.crew == 19.0f);
+  }
+  // Ankunft (0x55f750)
+  {
+    Health t = make(90, 100);  // Freund: Besatzung dazu, Rest bleibt in der Mannschaft
+    BoardResult r = ArriveBoardingParty(&t, 1, 1.0f, 20.0f, 1.0f, 1, false);
+    CHECK(Near(r.party_left, 10.0f) && t.crew == 100.0f && !r.owner_changed);
+    Health e = make(10, 100);  // Feind: Staerke 1,5 gegen 1,0, Mannschaft 10 -> 15 Mann Kampfkraft; Ziel hat 10
+    r = ArriveBoardingParty(&e, 2, 1.0f, 10.0f, 1.5f, 1, true);
+    CHECK(r.owner_changed && Near(e.crew, 5.0f / 1.5f) && !e.derelict && e.crew_max == 100.0f);
+    Health e2 = make(50, 100);  // Ziel hat genug Leute: es verliert 15, die Mannschaft ist weg, kein Besitzerwechsel
+    r = ArriveBoardingParty(&e2, 2, 1.0f, 10.0f, 1.5f, 1, true);
+    CHECK(!r.owner_changed && Near(e2.crew, 35.0f) && r.party_left == 0.0f);
+    Health e3 = make(10, 100);  // Kampf ohne Rest: Ziel faellt aus (Derelict), wird aber nicht uebernommen
+    r = ArriveBoardingParty(&e3, 2, 1.0f, 10.0f, 1.0f, 1, true);
+    CHECK(!r.owner_changed && e3.derelict && e3.crew == 0.0f);
+    Health d = make(0, 100);  // Derelict desselben Teams: Besatzung dazu, Rasse der Mannschaft
+    d.derelict = true;
+    r = ArriveBoardingParty(&d, 1, 1.0f, 5.0f, 1.0f, 1, false);
+    CHECK(r.race_changed && !r.owner_changed && d.crew == 5.0f);
+    Health d2 = make(0, 100);  // Derelict eines Feindes: uebernommen
+    d2.derelict = true;
+    r = ArriveBoardingParty(&d2, 2, 1.0f, 5.0f, 1.0f, 1, true);
+    CHECK(r.owner_changed && d2.crew == 5.0f && !d2.derelict);
+    Health d3 = make(0, 100);  // Derelict eines Verbuendeten (anderes Team, kein Feind): Besatzung dazu, aber kein Wechsel
+    d3.derelict = true;
+    r = ArriveBoardingParty(&d3, 2, 1.0f, 5.0f, 1.0f, 1, false);
+    CHECK(!r.owner_changed && !r.race_changed && d3.crew == 5.0f);
+  }
+}
+
 void TestShipSim() {
   using namespace fleet;
   PhysicsDef pd;
@@ -1664,6 +1743,7 @@ int main() {
   TestCombat();
   TestDying();
   TestShockwave();
+  TestBoarding();
   TestZip();
   std::printf("%d Pruefungen, %d Fehler\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

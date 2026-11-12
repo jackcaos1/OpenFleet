@@ -171,3 +171,26 @@ Tools: `tools/health_oracle.py`, `tools/health_dump.cpp`.
 Not covered by the checks: the original random number sequence (the seed is set at run time), the impact effect that every hit with
 systems damage spawns, the guard flags `+0x1b1`, `+0xc8` and `+0x678` (script flags), the disable flags of the damage packet, the
 `TimedHyper` effect.
+
+## Beaming and boarding (confirmed by emulation)
+
+`game/Boarding.*`, checked with `tools/boarding_check.py` (6 600 arrival cases and 8 300 transporter steps through the real functions,
+no deviation). Constants from the data section: range 300 (centre distance), interval 1.0 s, 5 crew per step.
+
+- **Transporter step** (Craft 0x467050, runs while the ship is not derelict or exploding): the timer counts down only while above 0; at
+  0 and with the beam flag set, the step runs. Target missing, centre distance above 300: stop. Enemy target (relation table entry 0):
+  its shield fraction must be at most 1 percent, and its recharge delay is reset to its `shieldDelay` every step. Friendly target: needs room
+  (crew below maximum). Then the source gives up 5 crew (`RemoveCrew`: the crew drops by 5 with the usual consequences, the party gets at most the old crew),
+  a boarding party is created (enemy: arrives after 1 s, friend: on the next update) and the timer is set to 1.0. The transport ends
+  after that step if `(crew - 5) / maxCrew` is not above the race's `crewRedStatus`.
+- **Arrival** (class `BoardingParty`, 0x55f750): the target needs a maximum crew of at least 1.
+  - Derelict target: the party's crew is added first (`AddCrew`, leftover lost); same team: the target takes over the party's race; enemy: the
+    target joins the party's team and race; ally of another team: nothing more.
+  - Friendly living target: crew is added, the leftover stays in the party.
+  - Hostile living target: `X = party crew x boardingStrength(party race) / boardingStrength(target race)`; the target loses X crew; if its crew was
+    below X the rest `(X - targetCrew) x strength(target) / strength(party)` captures it (the ship gets the party's team and race and the rest as crew).
+    If the target survives or the rest is 0, nothing changes hands (a target left with less than 1 crew becomes derelict).
+  - `boardingStrength` is a race value in the race definition (federation 1.0, Klingon 1.5, Romulan 0.75, Borg 1.75).
+- A derelict ship keeps its team; the original does not set it to 0. Whether enemy weapons fire at derelict ships is **unknown** (the client does not target them).
+- Not read: which ships may use the transport command and under which conditions (user interface level), the relation table itself (the client
+  treats equal teams as friends and all others as enemies), the station-capture effect (`0x5619a0`), the sound and beam effects.

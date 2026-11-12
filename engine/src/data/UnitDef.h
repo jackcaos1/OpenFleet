@@ -93,7 +93,7 @@ struct UnitDef {
 };
 
 struct RaceDef {
-  float repair_strength = 1.0f, crew_yellow = 0.4f, crew_red = 0.2f, repair_yellow = 1.5f, repair_red = 2.0f, weapon_yellow = 1.0f, weapon_red = 2.0f;
+  float repair_strength = 1.0f, crew_yellow = 0.4f, crew_red = 0.2f, repair_yellow = 1.5f, repair_red = 2.0f, weapon_yellow = 1.0f, weapon_red = 2.0f, boarding_strength = 1.0f;
 };
 bool LoadRaceDef(OdfLibrary& lib, const std::string& race, RaceDef* out);
 

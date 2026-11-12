@@ -51,6 +51,12 @@ class Ship:
         m.hook(0x4688c0, lambda mm: mm.ret_stdcall(0))
         m.hook(0x468990, self._explode)                  # Explode: nur Merker setzen
         self.exploded_calls = 0
+        self._brk = H + 0x30000     # einfacher Speicher fuer operator new (0x5bb998, cdecl)
+        def _new(mm):
+            size = mm.arg(0)
+            mm.uc.reg_write(UC_X86_REG_EAX, self._brk); self._brk += (size + 15) & ~15
+            ret_cdecl(mm)
+        m.hook(0x5bb998, _new)
         # _ftol (0x5bbb00, CRT-Thunk): auf 0 abschneiden wie die MSVC-Laufzeit (Rundung "zur Null")
         ftol = H + 0x9000
         code = bytes.fromhex('83ec08' 'd97c2404' '668b442404' '660d000c' '66890424' 'd92c24' 'df3c24' '8b0424' 'd96c2404' '83c408' 'c3')
@@ -106,6 +112,15 @@ class Ship:
 
     # ----- Aufrufe -----
     def call(self, addr, args=(), ecx=None):
-        return self.m.call(addr, ecx=self.O if ecx is None else ecx, args=list(args))
+        import os
+        if os.environ.get('TRACE') and not hasattr(self, '_ring'):
+            from unicorn import UC_HOOK_CODE
+            self._ring = []
+            self.m.uc.hook_add(UC_HOOK_CODE, lambda uc, a, sz, ud: (self._ring.append(a), self._ring.__delitem__(0) if len(self._ring) > 30 else None))
+        try:
+            return self.m.call(addr, ecx=self.O if ecx is None else ecx, args=list(args))
+        except RuntimeError:
+            if hasattr(self, '_ring'): print('letzte Adressen:', [hex(x) for x in self._ring])
+            raise
 
 def f2i(x): return struct.unpack('<I', struct.pack('<f', x))[0]

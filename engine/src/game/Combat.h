@@ -65,6 +65,7 @@ struct RaceRules {
   float crew_yellow = 0.4f, crew_red = 0.2f;  // crewYellowStatus / crewRedStatus
   float repair_yellow = 1.5f, repair_red = 2.0f;
   float weapon_yellow = 1.0f, weapon_red = 2.0f;
+  float boarding_strength = 1.0f;             // boardingStrength: Staerke als Entermannschaft und gegen sie
 };
 
 // Ein Teilsystem (Block von 0x38 Byte im Original)

@@ -33,6 +33,7 @@
 #include "core/Version.h"
 #include "render/ModelRenderer.h"
 #include "render/SpriteRenderer.h"
+#include "game/Boarding.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
 #include "game/Shell.h"
@@ -431,6 +432,7 @@ struct Game::Impl {
     fx.clear();
     fireballs.clear();
     shockwaves.clear();
+    parties.clear();
     spawn_models.clear();
     scene_hidden.clear();
     map_radius.clear();
@@ -856,7 +858,6 @@ struct Game::Impl {
     h.derelict = h.crew_max > 0 && h.crew < 1.0f;
     if (h.derelict) {
       sp->derelict = true;
-      sp->team = 0;
     }
   }
 
@@ -1351,6 +1352,7 @@ struct Game::Impl {
       RaceRules rr;
       rr.repair_strength = rd.repair_strength; rr.crew_yellow = rd.crew_yellow; rr.crew_red = rd.crew_red;
       rr.repair_yellow = rd.repair_yellow; rr.repair_red = rd.repair_red; rr.weapon_yellow = rd.weapon_yellow; rr.weapon_red = rd.weapon_red;
+      rr.boarding_strength = rd.boarding_strength;
       InitHealth(&s->hp, q, rr);
     }
     if (u.range_scan > 0) s->scan = u.range_scan;
@@ -1628,8 +1630,7 @@ struct Game::Impl {
   }
 
   void MakeDerelict(Spawned& s) {
-    s.derelict = true;
-    s.team = 0;
+    s.derelict = true;  // das Schiff behaelt sein Team (Original 0x466d80 aendert es nicht)
     s.target_id = 0;
     s.beam_id = 0;
     s.auto_move = 0;
@@ -1637,52 +1638,64 @@ struct Game::Impl {
     Message(s.label + " hat keine Besatzung mehr und treibt fuehrerlos.");
   }
 
-  // Transporter: alle 1 s werden Leute zum Ziel gebeamt (Reichweite = rangeScan). Befreundet/herrenlos: Besatzung wird uebergeben,
-  // das Schiff gehoert dann dem Absender. Feind: nur bei gesenktem Schild, Enterkommando; bei 0 Besatzung geht das Schiff an den Enterer.
-  // Annahmen: 10 Mann je Sekunde; Entermannschaft verliert halb so viele Leute, wie sie dem Gegner nimmt.
+  // Transporter (Original 0x467050): wenn der Zaehler abgelaufen ist, nimmt die Quelle 5 Leute ab und bildet eine Entermannschaft; Freunde
+  // bekommen sie sofort, Feinde nach 1 s (ihr Schild muss unten sein, ueber 300 Abstand endet der Transport). Ankunft: ArriveBoardingParty.
+  // Nicht aus dem Original: wie der Befehl ausgeloest wird und welche Schiffe ihn bekommen (Bedienung).
+  struct Party {
+    unsigned src = 0, target = 0;
+    float crew = 0, delay = 0;
+    bool enemy = false;
+    int team = 0;
+    RaceRules race;
+  };
+  std::vector<Party> parties;
+
   void DoBeam(Spawned& s) {
-    constexpr float kBeamRate = 10.0f;
     const int ti = FindById(s.beam_id);
-    if (ti < 0 || s.derelict || s.hp.crew <= 1.0f) { s.beam_id = 0; return; }
+    if (ti < 0 || s.derelict || !s.hp.alive() || !spawned[static_cast<size_t>(ti)].hp.alive()) { s.beam_id = 0; return; }
     Spawned& t = spawned[static_cast<size_t>(ti)];
-    if (Dist3(s.st.pos, t.st.pos) - RadiusOf(t) > s.scan) {
-      Message("Transport: Ziel ausser Reichweite.");
-      s.beam_id = 0;
-      return;
+    const bool enemy = s.team != t.team;
+    const BeamStep r = TransporterStep(&s.hp, &t.hp, Dist3(s.st.pos, t.st.pos), enemy);
+    if (r.created) {
+      Party p;
+      p.src = s.id;
+      p.target = t.id;
+      p.crew = r.party_crew;
+      p.delay = enemy ? kBoardingDelayEnemy : 0.0f;
+      p.enemy = enemy;
+      p.team = s.team;
+      p.race = s.hp.race;
+      parties.push_back(p);
+      s.beam_timer = kBeamInterval;
     }
-    const float give = std::min(kBeamRate, s.hp.crew - 1.0f);
-    if (t.derelict || t.team == s.team) {
-      const float room = std::max(0.0f, t.hp.crew_max - t.hp.crew);
-      const float n = std::min(give, room);
-      if (n <= 0) { s.beam_id = 0; return; }
-      SetCrew(&s.hp, s.hp.crew - n);
-      SetCrew(&t.hp, t.hp.crew + n);
-      if (t.derelict) {
-        t.derelict = false;
-        t.team = s.team;
-        t.alert = 1;
-        Message(t.label + " uebernommen.");
-      }
-    } else if (t.team > 0) {
-      if (t.hp.shield_max > 0 && t.hp.shield > 0) {
-        Message("Transport: Schild des Feindes ist noch oben.");
-        s.beam_id = 0;
-        return;
-      }
-      SetCrew(&s.hp, s.hp.crew - give * 0.5f);
-      SetCrew(&t.hp, t.hp.crew - give);
-      if (t.hp.derelict) {
-        SetCrew(&t.hp, give * 0.5f);
-        t.team = s.team;
-        t.target_id = 0;
-        t.derelict = false;
-        t.alert = 1;
-        StopShip(&t.st);
-        Message(t.label + " geentert!");
-        s.beam_id = 0;
-      }
-    } else {
+    if (r.stop) {
       s.beam_id = 0;
+      Message("Transport beendet.");
+    }
+  }
+
+  // Ankunft der Entermannschaften (Original 0x55f750); Rassenwechsel und Besitzerwechsel wie dort.
+  void StepParties(float dt) {
+    for (size_t i = 0; i < parties.size();) {
+      Party& p = parties[i];
+      p.delay -= dt;
+      if (p.delay >= 0) { ++i; continue; }
+      const int ti = FindById(p.target);
+      if (ti >= 0) {
+        Spawned& t = spawned[static_cast<size_t>(ti)];
+        const BoardResult r = ArriveBoardingParty(&t.hp, t.team, t.hp.race.boarding_strength, p.crew, p.race.boarding_strength, p.team, p.enemy);
+        if (r.race_changed) t.hp.race = p.race;
+        if (r.owner_changed) {
+          t.hp.race = p.race;
+          t.team = p.team;
+          t.target_id = 0;
+          t.auto_move = 0;
+          t.beam_id = 0;
+          t.alert = 1;
+          Message(t.label + (p.enemy ? " geentert!" : " uebernommen."));
+        }
+      }
+      parties.erase(parties.begin() + static_cast<long>(i));
     }
   }
 
@@ -1717,14 +1730,11 @@ struct Game::Impl {
       StepHealth(&s.hp, dt);
       s.attacked_t = std::max(0.0f, s.attacked_t - dt);
       if (s.hp.derelict && !s.derelict) MakeDerelict(s);
-      if (s.beam_id) {
-        s.beam_timer -= dt;
-        if (s.beam_timer <= 0) {
-          s.beam_timer = 1.0f;
-          DoBeam(s);
-        }
-      }
+      if (!s.hp.derelict && s.derelict) s.derelict = false;  // wieder bemannt (Beamen)
+      if (s.beam_timer > 0) s.beam_timer -= dt;             // Original 0x46708a: zaehlt nur, solange er ueber 0 ist
+      if (s.beam_id && s.beam_timer <= 0 && !s.derelict) DoBeam(s);
     }
+    StepParties(dt);
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& s = spawned[i];
       if (s.derelict || !s.hp.alive()) continue;
@@ -2843,7 +2853,7 @@ struct Game::Impl {
       case UiAction::Transport:
         transport_armed = !transport_armed;
         attack_armed = move_armed = false;
-        if (transport_armed) Message("Ziel zum Beamen antippen (Reichweite 500).");
+        if (transport_armed) Message("Ziel zum Beamen antippen (Reichweite 300).");
         break;
       case UiAction::StandDown:
         for (Spawned& x : spawned)

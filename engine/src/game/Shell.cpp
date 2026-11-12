@@ -82,8 +82,9 @@ void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, fl
     const float sc = std::min(W / kCanvasW, H / kCanvasH);
     const float ox0 = 0.5f * (W - kCanvasW * sc), oy0 = 0.5f * (H - kCanvasH * sc);
     fl.s = fr.s = fb.s = sc;
-    fl.ox = fb.ox = ox0; fl.oy = fb.oy = oy0;
-    fr.ox = ox0 + (0.5f * (kCanvasW - (640.0f - kSplit)) - kSplit) * sc;
+    fl.ox = 0.0f;               // obere Haelfte buendig am linken Bildschirmrand
+    fb.ox = ox0; fl.oy = fb.oy = oy0;
+    fr.ox = W - 640.0f * sc;    // untere Haelfte buendig am rechten Bildschirmrand
     fr.oy = oy0 + kHalfH * sc;
     L->draws.push_back(SubQuad("bitmaps/multiset/mpsBG.bmp", 0, 0, kLeftW, kHalfH, fl.ox, fl.oy, kLeftW * sc, kHalfH * sc));
     L->draws.push_back(SubQuad("bitmaps/multiset/mpsBG.bmp", kSplit, 0, 640, kHalfH, fr.ox + kSplit * sc, fr.oy, (640 - kSplit) * sc, kHalfH * sc));
@@ -200,11 +201,24 @@ ShellLayout BuildShell(ShellScreen screen, int width, int height, const std::str
   const bool skirm = screen == ShellScreen::Skirmish || screen == ShellScreen::SkirmishMap;
   const bool multi = screen == ShellScreen::Multi;
   const std::string bg = skirm ? "bitmaps/multiset/mpsBG.bmp" : multi ? "bitmaps/wonlogin/wlsBG.bmp" : main ? "bitmaps/main/mainbk.BMP" : "bitmaps/single/singlebk.bmp";
-  {  // Ersatz fuer schwarze Balken: derselbe Hintergrund, ueber den ganzen Bildschirm gezogen und abgedunkelt
+  const bool portrait = H > W;
+  if (skirm && portrait) {
+    // Hochformat (Abweichung vom Original): statt des gestreckten Hintergrundbilds ein schwarzer Himmel mit Sternen (feste Zufallsfolge, damit er ruhig bleibt)
+    L.draws.push_back(Quad("", 0, 0, W, H, 1.0f, 0.0f));
+    uint32_t r = 12345u;
+    auto rnd = [&r]() { r = r * 1664525u + 1013904223u; return static_cast<float>(r >> 8) / 16777216.0f; };
+    const int n = static_cast<int>(W * H / 5000.0f);
+    for (int i = 0; i < n; ++i) {
+      const float x = rnd() * W, y = rnd() * H, b = rnd(), sz = (b > 0.97f ? 2.5f : 1.5f) * std::max(1.0f, W / 640.0f);
+      const float c = 0.35f + 0.65f * b;
+      HudDraw d = Quad("", x, y, sz, sz, 0.9f, c);
+      d.rgba[2] = std::min(1.0f, c * (0.85f + 0.3f * rnd()));  // leicht blau/gelblich getoent
+      L.draws.push_back(d);
+    }
+  } else {  // Ersatz fuer schwarze Balken: derselbe Hintergrund, ueber den ganzen Bildschirm gezogen und abgedunkelt
     const float c = std::max(W / 640.0f, H / 480.0f);
     L.draws.push_back(Quad(bg, 0.5f * (W - 640.0f * c), 0.5f * (H - 480.0f * c), 640.0f * c, 480.0f * c, 1.0f, 0.3f));
   }
-  const bool portrait = H > W;
   if (!(skirm && portrait)) L.draws.push_back(Quad(bg, f.ox, f.oy, 640.0f * f.s, 480.0f * f.s));  // Hochformat: Setup zeichnet seinen Hintergrund selbst (zwei Ausschnitte)
 
   if (multi) {

@@ -30,11 +30,25 @@ Verified in the executable (GOG Armada.exe, addresses given) or in the data file
   which game mode a skirmish uses is not yet read. The `*.ldl` files (obfuscated) are not needed for the lobby; the game itself calls the string
   library with the file name `lang.txt` (0x43ff37), which does not exist in the installation, so the `.ldl` role is unclear.
 
+## Starting units and settings (verified in 0x4408b0 (start), 0x442fd0 (starting units), 0x448d50 (team records))
+- **Start function 0x4408b0** loads the rule set for the chosen tech level (key `techfile<N>` in `techlvl.odf`: 0 `tech1.tt`, 1 `nosuper.tt`, 2 `nosci.tt`,
+  3 `nospweap.tt`, 4 `scionly.tt`, 5 `freetech.tt`, 6 `supersid.tt`; the seven lobby entries), and for the default-units mode 3 ("super side") it sets the race of each human player
+  from the race of the map objects owned by that team (federation 0, borg 1, romulan 2, klingon 3), then creates the starting units (0x442fd0).
+- **Starting units 0x442fd0:** only teams that have a player and own no object in the map get units. The unit list comes from the player's race ODF by the
+  default-units setting (+0x80): 0 = map units (nothing is created), 1 = `minimalUnits1..9`, 2 = `standardUnits1..9`, 3 = `superUnits1..9` (comments in
+  `fed.odf`: minimal = construction ship, standard = 2 construction ships + starbase, super side = one construction ship of every race). The default of the lobby
+  is 1 (minimal).
+- **Position:** the path `Camera_<team number>` of the map (first point); if the map has no such path, the centre of the map bounds (x and z) at the height (ceiling + floor) / 2.
+  Each unit is tried on a spiral around that point: radius counter r = 1, 1 + 1/12, ... up to 40; the angle is 2 pi r, the offset is 120 r (x: sin, z: cos);
+  the first position the object class accepts (virtual call, placement test) is used; if r passes 40 the centre is used. The test itself was not decoded.
+- **Team records** (0x448d50): current dilithium = (lobby dilithium x player handicap) / 100 (+0x10), maximum dilithium = `cfgMaxDilithium` (+0x14),
+  current crew = (lobby crew x handicap) / 100 (+0x20), maximum crew = `cfgMaxCrew` (+0x24), officers (+0x18 / +0x1c) = lobby officers. In mode 3 the `RTS_CFG.h`
+  starting values (3500 dilithium, 4000 crew) replace the lobby values. Lobby defaults: dilithium 3000, crew 3500 (the host falls back to the first list entry
+  when the configured value is not in the list), officers 100, tech level 1 (standard), default units 1 (minimal), handicap 100.
+
 ## Open (not verified)
 - What happens to the start objects of slots nobody plays (a 4 player map with 2 players). The client keeps them as they are in the map.
 - Whether the race chosen for a slot in the lobby replaces the map's start objects. The map header has one "race" entry (2duel: klingon, 4first: borg), the
   start objects carry fixed prefixes (4hub: team 1 federation, team 4 borg). The client keeps the map's objects; the HUD race follows slot 1.
-- How maps without any start object (4first, 4nirvana, 285 and 266 environment objects only) get their start units. The routine is not found yet; the
-  client starts them empty and says so in a message.
-- Which of the five lobby values is the default and which game mode value a skirmish uses.
+- The placement test of the spiral (virtual call 0x443229, object class method); the client uses its own free-spot test.
 - The local player number of the human in a skirmish (assumed to be slot 1 = `Camera_1`).

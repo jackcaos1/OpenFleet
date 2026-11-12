@@ -2625,27 +2625,49 @@ struct Game::Impl {
     if (idx < 0) return;
     LoadMap(idx);
     if (!map_loaded) return;
-    // Karte: nur Neutrales bleibt Kartenobjekt; angelegte Spielerobjekte sofort setzen
-    spawned.clear();
+    // Original (docs/formats/session-start.md): die Startobjekte liegen in der Karte (BZN-Objekte mit Team N gehoeren dem Spieler N), die Anfangskamera ist der
+    // Pfad "Camera_N". Die Startfelder der .mdf sind nur Vorschaupunkte auf einem 128er Raster, keine Weltkoordinaten.
     selected = -1;
     static const char kRace[4] = {'f', 'k', 'r', 'b'};
     const int n = SkSlots();
+    std::vector<char> has_start(static_cast<size_t>(n), 0);
+    for (size_t k = spawned.size(); k-- > 0;) {
+      Spawned& o = spawned[k];
+      if (o.team < 1 || o.team > n) continue;  // neutral oder Szenerie (Teamnummer ohne Spielerplatz) bleibt
+      const SkSlot& sl = sk_slot[o.team - 1];
+      if (sl.kind == 0) {  // Platz nicht belegt: seine Startobjekte entfallen
+        UnstampStation(o);
+        spawned.erase(spawned.begin() + static_cast<long>(k));
+        continue;
+      }
+      has_start[static_cast<size_t>(o.team - 1)] = 1;
+      o.team = sl.team;  // Bund des Platzes
+    }
+    auto camera = [&](int player, float out[3]) {
+      for (const BznPath& p : map.paths) {
+        if (ToLowerAscii(p.name) != "camera_" + std::to_string(player) || p.points.size() < 3) continue;
+        out[0] = p.points[0]; out[1] = 0.0f; out[2] = -p.points[2];  // Karte: z gespiegelt (GL)
+        return true;
+      }
+      return false;
+    };
     for (int i = 0; i < n; ++i) {
       const SkSlot& sl = sk_slot[i];
       if (sl.kind == 0) continue;
-      const std::string p(1, kRace[sl.race]);
-      const float cx = static_cast<float>(sk_starts[static_cast<size_t>(i)].first) * 50.0f + 25.0f;
-      const float cz = static_cast<float>(sk_starts[static_cast<size_t>(i)].second) * 50.0f + 25.0f;
-      const float base[3] = {cx, 0, cz};
-      SpawnAt(p + "base", sl.team, base, false, false);
-      // Originalstart (aus den Vorlagen in 4hub.bzn u. a.): je Spieler eine Basis und ein Bauschiff, Bauschiff etwa (+176, -151) neben der Basis
-      const float cpos[3] = {cx + 176.0f, 0, cz - 151.0f};
-      SpawnAt(p + "const", sl.team, cpos, false, false);
+      float c[3] = {0, 0, 0};
+      const bool have_cam = camera(i + 1, c);
+      if (!has_start[static_cast<size_t>(i)] && have_cam) {
+        // ANNAHME: Karten ohne Startobjekte (z. B. 4first, 4nirvana) bekommen Basis und Bauschiff am Kamerapunkt des Platzes; das Original-Verhalten ist nicht geprueft
+        const std::string p(1, kRace[sl.race]);
+        SpawnAt(p + "base", sl.team, c, false, false);
+        const float cpos[3] = {c[0] + 176.0f, 0, c[2] - 151.0f};
+        SpawnAt(p + "const", sl.team, cpos, false, false);
+      }
       if (i == 0) {
         hud_race = sl.race;
         human_team = sl.team;
         LoadHud();
-        map_target[0] = cx; map_target[1] = 0; map_target[2] = cz;
+        if (have_cam) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
         map_dist = 2200.0f;
         zoom = 1.0f;
       }
@@ -3181,7 +3203,7 @@ void Game::OnFrame(double dt) {
       const int nx = static_cast<int>((x1 - x0) / cell), nz = static_cast<int>((z1 - z0) / cell);
       std::vector<MarkerRenderer::Marker> gm, gz;
       MarkerRenderer::Marker m;
-      m.color[0] = m.color[1] = m.color[2] = 0.4f;
+      m.color[0] = 0.149f; m.color[1] = 0.128f; m.color[2] = 0.0f;
       m.pos[1] = 0.0f;
       for (int i = 0; i <= nx; ++i) {  // Linien konstanten x, von z0 bis z1
         m.pos[0] = x0 + cell * static_cast<float>(i); m.pos[2] = -z0;

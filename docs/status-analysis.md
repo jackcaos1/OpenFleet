@@ -79,7 +79,12 @@ Verification levels:
 - [ ] Multiplayer
 - [ ] Fog of war
 - [ ] Special weapons (bar has no effect); commands patrol, scout, guard, search and destroy, repair
-- [ ] Original tooltips, cinematic view, drag-selection box
+- [ ] Original tooltips, drag-selection box
+- [ ] Cinematic view (the HUD field currently shows only its default image). The original has a shot director (class `ShotDirector`,
+  global object at `0x662bf0`) that receives camera requests from 27 places, e.g. destroyed ships (`0x466090`) and fireballs
+  (`0x51b330`); it drives camera classes `GameCamera`, `CinematicCamera`, `ParabolicCamera` and `CameraTrack`. Still to do: read the
+  request parameters (14.0, duration, 1.5 / 2.0 / 6.0, 3, 3, up to four objects), the shot selection rules and the camera paths, then render a
+  second camera into the HUD field (viewport pass or offscreen buffer). See `docs/formats/ship-health.md`.
 - [ ] Options and load buttons, saving settings
 - [ ] Web client (only planned as a reservation); Armada II (explicitly out of scope)
 

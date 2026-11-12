@@ -191,7 +191,9 @@ no deviation). Constants from the data section: range 300 (centre distance), int
     below X the rest `(X - targetCrew) x strength(target) / strength(party)` captures it (the ship gets the party's team and race and the rest as crew).
     If the target survives or the rest is 0, nothing changes hands (a target left with less than 1 crew becomes derelict).
   - `boardingStrength` is a race value in the race definition (federation 1.0, Klingon 1.5, Romulan 0.75, Borg 1.75).
-- A derelict ship keeps its team; the original does not set it to 0. Whether enemy weapons fire at derelict ships was not read; by decision of the project owner derelict ships count as ownerless and nobody fires at them (the client does not target them).
+- A derelict ship keeps its team and owner; nothing in the derelict handler (0x466ca0/0x466d80) writes the owner field (+0x194) or the team record, and the only writers of +0x194 are the object constructor (-1), SetOwner and the loader. The relation check (0x46e2a0) therefore still sees an enemy.
+- Weapon target validity (0x42faa0): after the relation check, a derelict target is rejected unless the attacker's player slot has flag +0xa8 set (0x472100). That flag is set in the lobby setup (0x431f60) only for slots that are not computer/empty (supposed: human players), so the check would apply to computer-controlled ships (they never target derelicts) while human-owned weapons are not filtered by it. Status: suspected (meaning of +0xa8 not confirmed).
+- Client behaviour: nobody targets derelict ships (project owner's decision); this is not the same mechanism as in the original (ownerless/neutral vs. a derelict test for computer players).
 - Not read: which ships may use the transport command and under which conditions (user interface level), the relation table itself (the client
   treats equal teams as friends and all others as enemies), the station-capture effect (`0x5619a0`), the sound and beam effects.
 

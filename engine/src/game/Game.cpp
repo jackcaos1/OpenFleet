@@ -2650,6 +2650,7 @@ struct Game::Impl {
       SkirmishOptionView ov;
       ov.id = static_cast<int>(d.id);
       ov.x = d.x; ov.y = d.y; ov.w = d.w; ov.h = d.h;
+      ov.toggle = d.toggle;
       ov.text = SkOptText(labels, sk_set, d.id);
       v.options.push_back(ov);
     }

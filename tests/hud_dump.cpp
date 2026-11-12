@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
     sv.btn_prev = "Previous Menu"; sv.btn_launch = "LAUNCH"; sv.btn_main = "Main Menu"; sv.btn_select_map = "SELECT MAP"; sv.map_name = "2blue"; sv.preview = "bzn/2blue.bmp";
     const char* kOpt[18] = {"Normal Game", "Max Players: 8", "Ping Filter Off", "Game Open", "3000", "3500", "100", "Minimal Units", "Standard Tech", "Teams", "Give Units On", "Infinite Moons Off", "Ferengi On", "Directors Cut Off", "Minimap Hidden", "Fixed Placement", "Show None", "Shroud On, Fog On"};
     static const float kY[18] = {60, 84, 108, 132, 156, 180, 204, 228, 252, 276, 300, 324, 348, 372, 295, 318, 341, 364};
-    for (int i = 0; i < 18; ++i) { SkirmishOptionView o; o.id = i; o.x = i < 14 ? 524 : 385; o.y = kY[i]; o.w = i < 14 ? 111 : 128; o.h = 20; o.text = kOpt[i]; sv.options.push_back(o); }
+    for (int i = 0; i < 18; ++i) { SkirmishOptionView o; o.id = i; o.x = i < 14 ? 524 : 385; o.y = kY[i]; o.w = i < 14 ? 111 : 128; o.h = 20; o.text = kOpt[i]; o.toggle = (i == 3 || (i >= 9 && i <= 15)); sv.options.push_back(o); }
     sv.maps = {"2blue", "2borders", "2deadzone", "2divide", "2duel", "2hidden", "2maze"}; sv.selected = 1; sv.can_down = true; sv.filter_text = "All Maps"; sv.btn_select = "Select Map"; sv.btn_cancel = "Cancel";
     sv.info = {"Karte: 2blue", "Spieler: 2"};
     const ShellLayout SL = BuildShell(sc == "skirmish" ? ShellScreen::Skirmish : sc == "skirmishmap" ? ShellScreen::SkirmishMap : sc == "single" ? ShellScreen::Single : ShellScreen::Main, std::atoi(argv[2]), std::atoi(argv[3]), argc > 7 ? argv[7] : "", &d, &sv);

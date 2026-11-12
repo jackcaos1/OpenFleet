@@ -34,6 +34,7 @@ struct SkirmishOptionView {
   int id = 0;  // Index der Option (game/Skirmish.h), Aktions-ID "opt:<id>"
   float x = 0, y = 0, w = 0, h = 0;
   std::string text;
+  bool toggle = false;  // Schalter (tg-Grafik) statt Auswahlliste (pd-Grafik)
   bool enabled = true;
 };
 struct SkirmishView {

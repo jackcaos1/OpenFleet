@@ -82,13 +82,20 @@ void BuildSkirmish(ShellLayout* L, float s, float ox, float oy, const std::strin
     const SkirmishSlotView& v = sk->slot[i];
     const bool on = v.state == 1;
     const std::string n = std::to_string(i);
+    if (on) {  // Auswahlfelder der Zeile (Combo-Boxen 145 / 111 / 58 x 19), Grafiken mpsplapd / mpsracpd / mpsteapd
+      Plate(L, f, "mpsplapd", pressed == "slot_name:" + n ? 2 : 1, 5, y - 1, 145, 19);
+      Plate(L, f, "mpsracpd", pressed == "slot_race:" + n ? 2 : 1, 149, y - 1, 111, 19);
+      Plate(L, f, "mpsteapd", pressed == "slot_team:" + n ? 2 : 1, 261, y - 1, 58, 19);
+    }
     Slot(L, f, font, 7, y, 142, 14, v.name, i == 0 ? kGreen : kInk, false, on && i > 0 ? "slot_name:" + n : "", on, pressed == "slot_name:" + n, false);
     Slot(L, f, font, 151, y, 109, 14, v.race, kInk, false, on ? "slot_race:" + n : "", on, pressed == "slot_race:" + n, false);
     Slot(L, f, font, 262, y, 55, 14, v.team, kInk, false, on ? "slot_team:" + n : "", on, pressed == "slot_team:" + n, false);
   }
   for (const SkirmishOptionView& o : sk->options) {
     const std::string id = "opt:" + std::to_string(o.id);
-    Slot(L, f, font, o.x + 3, o.y, o.w - 6, o.h - 4, o.text, kInk, true, id, o.enabled, pressed == id, false);
+    const std::string kind = o.toggle ? "tg" : "pd";  // Auswahlliste = pd (mit Pfeil), Schalter = tg
+    Plate(L, f, std::string(o.w > 120 ? "mps128" : "mps111") + kind, pressed == id ? 2 : 1, o.x, o.y, o.w, o.h);
+    Slot(L, f, font, o.x + 3, o.y, o.w - 6, o.h - 4, o.text, kInk, true, id, o.enabled, false, false);
   }
   if (!sk->map_name.empty()) Slot(L, f, font, 385, 104, 130, 14, sk->map_name, kWhite, false, "", true, false, false);
   if (!sk->preview.empty()) L->draws.push_back(Quad(sk->preview, f.ox + 385 * f.s, f.oy + 138 * f.s, 128 * f.s, 128 * f.s));

@@ -348,8 +348,15 @@ debug-50: Pfadraster stempelt zusaetzlich Schwarzes Loch (gesperrt), Nebel (path
 **Symbolansicht (debug-64/65):** Schiffe und Stationen mit Team > 0 werden unter `sym_px` (Standard 48 Pixel Bildschirmdurchmesser) durch ein kamerazugewandtes HUD-Sprite ersetzt, eingefaerbt mit `kMapTeamColors`. Modi (Erweiterte Einstellungen): aus / Fraktionslogo (`federation_icon` usw. aus gui_federation.spr, Rasse nach erstem ODF-Buchstaben f/k/r/b) / Drahtgitter (`<odf>w1..w5` aus gui_global.spr). Auswahlecken `selection.00/20/02/22` nur fuer ausgewaehlte Schiffe. Code: Game.cpp (`sym_small`, `syms`, Block "Symbolansicht"). **Noch nicht bestaetigt:** ob Drahtgitter-Modus richtig aussieht (debug-64 zeigte nur den fehlerhaften Logo-Modus). Offen: weiche Ueberblendung, Stationen ohne Auswahlzustand, vereinfachtes Waffenfeuer in der Ferne, Kartenobjekte wie auf der Minimap, Farbenblind-/Freund-Feind-Modus (soll auf alle Teamfarben wirken), Zweck der Auswahlecken im Original klaeren.
 
 **Backlog / offen:**
-- Wrack-Fehler: Ein beschossenes Schiff wurde unauswaehlbar, trudelte (`s.st.yaw += 0.7f*dt` im Derelict-Zweig) und explodierte nie.
+- Wrack-Fehler (erledigt in debug-66/Branch night/health-model): Ein Derelict-Schiff trudelt nicht mehr von selbst; das Trudeln nach Antriebsausfall kommt aus der Flugphysik, die Zerstoerung folgt dem Originalablauf (docs/formats/ship-health.md).
 - Potentialfeld / Collision.cfg (Bauschiff fliegt durch die Sternbasis), Sonnen, LOD-Wahl (0x57c810).
 - Licht: Beleuchtungsmodell 3, Specular-Blickvektor, ob die Glow-Lichter im Original ohne Config-Flag ST3D_SHOW_LIGHT_SOURCE_INFO (Global 0x628c78) aktiv sind, Phasenrate der Animation (30/s angenommen).
 - Optionsmenue: Hauptmenue-Optionsknopf ist noch deaktiviert; Einstellungen stehen unter "Erweiterte Einstellungen" im Spielmenue (MenuKind::Advanced), DEBUG-Menue bleibt separat.
 - Aeltere Liste: weitere Menuebildschirme, Savegame, HUDs, Missionen, Gegner-KI.
+
+### Nachtarbeit (Branch `night/health-model`, nach debug-66)
+- **Gesundheitsmodell** (`game/Combat.*`) nach dem Original neu geschrieben und per Emulation geprueft (`tools/health_check.py`, `health_oracle.py`, `health_dump.cpp`; Unicorn im venv, FPCW 0x7f): ganzzahliger Trefferwurf, Schildschutz und Ueberlauf, ganze Systempunkte mit Uebertrag, Besatzungsverlust in Prozent der AKTUELLEN Besatzung plus 1, Verteilung der Trefferanteile (Sammelbecken = criticalHitPercent), Reparatur aller Systeme gleichzeitig, Derelict (alle Systeme aus, Schild 0, Team bleibt), Schildverzoegerung. 6000+ Szenarien ohne Abweichung. Savegame speichert jetzt den vollen Systemzustand (CraftSystem).
+- **Beamen/Entern** (`game/Boarding.*`, `tools/boarding_check.py`): 5 Leute/s, Reichweite 300, Feind-Mannschaft nach 1 s, boardingStrength je Rasse, Uebernahme; Emulation ohne Abweichung.
+- **Pfad:** Wegpunkt per quadriertem 3D-Abstand, bei "kein Weg" bleibt das Schiff stehen, Raster aus den Kartengrenzen des Kopfes (nur gelesen, nicht emuliert).
+- **Offen/UNBEKANNT:** Schwierigkeitsfaktor des Schadens, zeitweiser Systemausfall durch Spezialwaffen, Beziehungstabelle der Teams (Client: gleiches Team = Freund), ob Feinde auf Derelict-Schiffe schiessen, Befehlsvoraussetzungen fuer Transport, Pfadzustand 0x19, Kinosicht (ShotDirector).
+

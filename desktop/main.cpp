@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
           if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_h) game.ToggleHardpoints();
           if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_f) game.ToggleFire();
           if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_s) game.ToggleMute();
+          if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_g) game.ToggleGrid();
           if (e.type == SDL_MOUSEWHEEL) game.OnScroll(static_cast<float>(e.wheel.y));
           if (e.type == SDL_MOUSEMOTION && (e.motion.state & SDL_BUTTON_LMASK)) {
             fleet::PointerEvent p;

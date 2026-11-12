@@ -148,6 +148,7 @@ struct Game::Impl {
   // --- Ton ---
   Mixer mixer;
   bool muted = false;
+  bool grid_visible = true;  // Original: Schalter 0x631de8, Standard an, Taste G (Input.map: grid_toggle)
   std::map<std::string, std::shared_ptr<const PcmClip>> clips;  // Name (klein) -> Clip; nullptr = nicht ladbar
   Mixer::VoiceId music_voice = Mixer::kNone;
   struct Ambient {
@@ -1144,6 +1145,7 @@ struct Game::Impl {
                    {"Info zur Auswahl / Karte", "@info"},
                    {std::string("Teamfarbe wechseln (jetzt ") + std::to_string(spawn_team) + ")", "@team"},
                    {muted ? "Ton einschalten" : "Ton ausschalten", "@mute"},
+                   {grid_visible ? "Gitter ausschalten" : "Gitter einschalten", "@grid"},
                    {"Kamera naeher", "@zin"},
                    {"Kamera weiter weg", "@zout"},
                    {"Ansicht zuruecksetzen", "@reset"},
@@ -1262,6 +1264,7 @@ struct Game::Impl {
     else if (key == "@info") ShowSelectedInfo();
     else if (key == "@team") CycleSpawnTeam();
     else if (key == "@mute") ToggleMute();
+    else if (key == "@grid") ToggleGrid();
     else if (key == "@zin") zoom = std::min(30.0f, zoom * 1.25f);
     else if (key == "@zout") zoom = std::max(0.2f, zoom / 1.25f);
     else if (key == "@reset") { zoom = 1.0f; map_yaw = 0.6f; map_pitch = 0.8f; }
@@ -2864,6 +2867,11 @@ struct Game::Impl {
     return st;
   }
 
+  void ToggleGrid() {
+    grid_visible = !grid_visible;
+    Message(grid_visible ? "Gitter an" : "Gitter aus");
+  }
+
   void ToggleMute() {
     muted = !muted;
     if (music_voice != Mixer::kNone) mixer.Set(music_voice, muted ? 0.0f : 0.45f, 0.0f);
@@ -3037,6 +3045,7 @@ void Game::ToggleMap() { impl_->ToggleMap(); }
 void Game::MixAudio(int16_t* out, int frames) { impl_->mixer.Mix(out, frames); }
 int Game::audio_rate() const { return impl_->mixer.output_rate(); }
 void Game::ToggleMute() { impl_->ToggleMute(); }
+void Game::ToggleGrid() { impl_->ToggleGrid(); }
 
 bool Game::SaveState(std::vector<uint8_t>* out) { return impl_->SaveToBytes(out); }
 void Game::LoadStateLater(std::vector<uint8_t> bytes) {
@@ -3164,27 +3173,30 @@ void Game::OnFrame(double dt) {
     }
     const Mat4 view = Mat4::Translation(0, 0, -dist) * rot * Mat4::Translation(-s.map_target[0], -s.map_target[1], -s.map_target[2]);
     const Mat4 proj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + 14000.0f);
-    {  // Orientierungsgitter (waagerechte Ebene) in Hoehe des Hauptobjekts, vor den Modellen gezeichnet
-      const float cell = 75.0f;  // etwa Groesse der Foederationsbasis (Fbase: ca. 75 Einheiten)
-      const float gy = 0.0f;     // Gitterebene = Kartenebene (y = 0)
-      const float ext = std::ceil(std::max(6000.0f, s.map_loaded && s.map_current >= 0 ? 3.0f * s.scene.extent : 0.0f) / cell) * cell;
-      const int half = static_cast<int>(ext / cell);
-      const float cx = s.map_current >= 0 ? std::round(s.scene.center[0] / cell) * cell : 0.0f;
-      const float cz = s.map_current >= 0 ? std::round(s.scene.center[2] / cell) * cell : 0.0f;
-      std::vector<MarkerRenderer::Marker> gm;
-      for (int i = -half; i <= half; ++i) {
-        MarkerRenderer::Marker m;
-        const float v = i % 5 == 0 ? 0.55f : 0.28f;  // weiss, jede fuenfte Linie heller
-        m.color[0] = m.color[1] = m.color[2] = v;
-        m.pos[1] = gy;
-        m.pos[0] = cx - ext; m.pos[2] = cz + cell * static_cast<float>(i);
-        m.dir[0] = 1; m.dir[1] = 0; m.dir[2] = 0;
-        gm.push_back(m);
-        m.pos[0] = cx + cell * static_cast<float>(i); m.pos[2] = cz - ext;
-        m.dir[0] = 0; m.dir[2] = 1;
+    if (s.grid_visible && s.map_loaded && s.map_current >= 0 && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {
+      // Original (docs/formats/gui-grid.md): Terrain-Objekt zeichnet Linien in der Ebene y = 0 ueber die Kartengrenzen des Kopfes, Zelle 100
+      // (Global 0x631cdc), Linienanfang an der Kartengrenze (nicht an Vielfachen von 100), Farbe (0,149 / 0,128 / 0,0) (0x690ac0).
+      const float cell = 100.0f;
+      const float x0 = s.map.bounds[0], x1 = s.map.bounds[1], z0 = s.map.bounds[4], z1 = s.map.bounds[5];  // z im Originalsystem, GL: -z
+      const int nx = static_cast<int>((x1 - x0) / cell), nz = static_cast<int>((z1 - z0) / cell);
+      std::vector<MarkerRenderer::Marker> gm, gz;
+      MarkerRenderer::Marker m;
+      m.color[0] = 0.149f; m.color[1] = 0.128f; m.color[2] = 0.0f;
+      m.pos[1] = 0.0f;
+      for (int i = 0; i <= nx; ++i) {  // Linien konstanten x, von z0 bis z1
+        m.pos[0] = x0 + cell * static_cast<float>(i); m.pos[2] = -z0;
+        m.dir[0] = 0; m.dir[1] = 0; m.dir[2] = -1;
         gm.push_back(m);
       }
-      s.grid_markers.Set(gm, 2.0f * ext);
+      for (int j = 0; j <= nz; ++j) {  // Linien konstanten z, von x0 bis x1
+        m.pos[0] = x0; m.pos[2] = -(z0 + cell * static_cast<float>(j));
+        m.dir[0] = 1; m.dir[1] = 0; m.dir[2] = 0;
+        gz.push_back(m);
+      }
+      // Marker haben eine einheitliche Laenge: beide Richtungen getrennt zeichnen
+      s.grid_markers.Set(gm, z1 - z0);
+      s.grid_markers.Draw(proj * view, 1.0f);
+      s.grid_markers.Set(gz, x1 - x0);
       s.grid_markers.Draw(proj * view, 1.0f);
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));

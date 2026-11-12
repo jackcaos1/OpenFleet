@@ -1694,6 +1694,15 @@ static void TestPathGrid() {
     CHECK(path(198, true) == path(198, false));
     CHECK(path(2, true) <= 2);
   }
+  {  // grosse Karte (Zahl der Ebenen folgt der Groesse, 0x408e30): Wege ueber die Grenzen der frueheren Spitzenzellen hinweg
+    PathGrid big; big.Init(0, 0, 12800, 3200, 50);
+    std::vector<PathPoint> q;
+    CHECK(big.FindPath({5649, 1505}, {6000, 1800}, &q));
+    CHECK(big.FindPath({1000, 500}, {12000, 2800}, &q));
+    CHECK(big.FindPath({12000, 2800}, {1000, 500}, &q));
+    big.StampField(6500, 1600);
+    CHECK(big.FindPath({5000, 1600}, {8000, 1600}, &q) && q.size() >= 2);
+  }
   g.StampSquare(0, 0, 75);
   CHECK(g.Blocked(0, 0));
   CHECK(g.Blocked(70, -70));

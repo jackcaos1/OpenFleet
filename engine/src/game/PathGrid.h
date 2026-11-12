@@ -48,6 +48,7 @@ class PathGrid {
   float minx_ = 0, minz_ = 0, W_ = 0, H_ = 0, res_ = 50;
   int32_t default_cost_ = 100;
   std::vector<Level> lv_;
+  int nlev_ = 8;   // Ebenenzahl nach der Kartengroesse (Konstruktor 0x408e30)
   mutable bool dirty_ = true;
   mutable std::vector<Leaf> leaves_;
   mutable std::vector<std::vector<Edge>> adj_;

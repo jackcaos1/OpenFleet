@@ -13,7 +13,6 @@ struct P { double x, z; };
 inline double Cr(P a, P b) { return a.x * b.z - a.z * b.x; }
 inline P Sub(P p, P c) { return {p.x - c.x, p.z - c.z}; }
 inline double Dist(P a, P b) { const double dx = a.x - b.x, dz = a.z - b.z; return std::sqrt(dx * dx + dz * dz); }
-constexpr int kLevels = 8;
 }  // namespace
 
 void PathGrid::Init(float minx, float minz, float maxx, float maxz, float res) {
@@ -22,14 +21,30 @@ void PathGrid::Init(float minx, float minz, float maxx, float maxz, float res) {
   minx_ = minx; minz_ = minz;
   W_ = std::fabs(maxx - minx) + 1000.0f;   // Kartenbreite + 2 * 500 Rand (0x4093b0)
   H_ = std::fabs(maxz - minz) + 1000.0f;
-  lv_.assign(kLevels, Level());
-  for (int k = 0; k < kLevels; ++k) {
-    Level& L = lv_[static_cast<size_t>(k)];
-    L.size = static_cast<double>(res_) * static_cast<double>(1 << (kLevels - 1 - k));
-    L.cols = static_cast<int>(std::ceil(static_cast<double>(W_) / L.size));
-    L.rows = static_cast<int>(std::ceil(static_cast<double>(H_) / L.size));
-    L.cost.assign(static_cast<size_t>(L.cols) * static_cast<size_t>(L.rows), default_cost_);
-    L.sub.assign(L.cost.size(), 0);
+  // Konstruktor 0x408e30: Zahl der Ebenen = max(ceil(log2(Spalten)), ceil(log2(Zeilen))) + 1, Spalten/Zeilen = ceil(Breite/Aufloesung); die feinste Ebene
+  // hat die Zellgroesse der Aufloesung, jede groebere das Doppelte bei halbierter (aufgerundeter) Zahl; die Wurzel hat eine Zelle. Rechnung wie die x87-Befehle
+  // (ln(n) / ln(2) in erweiterter Genauigkeit, dann aufrunden).
+  const int cols0 = static_cast<int>(std::ceil(static_cast<double>(W_) / static_cast<double>(res_)));
+  const int rows0 = static_cast<int>(std::ceil(static_cast<double>(H_) / static_cast<double>(res_)));
+  const double ln2 = static_cast<double>(std::log(2.0L));
+  auto log2c = [&](int n) { return static_cast<int>(std::ceil(static_cast<double>(std::log(static_cast<long double>(n)) / static_cast<long double>(ln2)))); };
+  nlev_ = std::max(log2c(cols0), log2c(rows0)) + 1;
+  if (nlev_ < 1) nlev_ = 1;
+  lv_.assign(static_cast<size_t>(nlev_), Level());
+  {
+    double size = static_cast<double>(res_);
+    int cols = cols0, rows = rows0;
+    for (int k = nlev_ - 1; k >= 0; --k) {
+      Level& L = lv_[static_cast<size_t>(k)];
+      L.size = size;
+      L.cols = cols;
+      L.rows = rows;
+      L.cost.assign(static_cast<size_t>(L.cols) * static_cast<size_t>(L.rows), default_cost_);
+      L.sub.assign(L.cost.size(), 0);
+      size *= 2.0;
+      cols = static_cast<int>(std::ceil(cols * 0.5));
+      rows = static_cast<int>(std::ceil(rows * 0.5));
+    }
   }
   dirty_ = true;
   // Konstruktor 0x408e30: vier Randstreifen der Breite 500 + Aufloesung sind gesperrt
@@ -59,7 +74,7 @@ void PathGrid::StampRect(double x0, double z0, double x1, double z1, int32_t cos
   if (full && !L.sub[a]) { if (Want(L.cost[a], cost, flag)) L.cost[a] = cost; return; }
   const double ix0 = std::max(x0, cx0), iz0 = std::max(z0, cz0), ix1 = std::min(x1, cx1), iz1 = std::min(z1, cz1);
   if (!(ix0 <= ix1 && iz0 <= iz1)) return;
-  if (k == kLevels - 1) { if (Want(L.cost[a], cost, flag)) L.cost[a] = cost; return; }
+  if (k == nlev_ - 1) { if (Want(L.cost[a], cost, flag)) L.cost[a] = cost; return; }
   if (!L.sub[a]) {
     L.sub[a] = 1;
     Level& C = lv_[static_cast<size_t>(k) + 1];
@@ -97,7 +112,7 @@ void PathGrid::StampBox(float x0, float z0, float x1, float z1, float r, int32_t
 PathGrid::Res PathGrid::Collect(int k, int i, int j, std::vector<Leaf>* out) const {
   const Level& L = lv_[static_cast<size_t>(k)];
   const size_t a = static_cast<size_t>(j) * static_cast<size_t>(L.cols) + static_cast<size_t>(i);
-  if (L.sub[a] && k < kLevels - 1) {
+  if (L.sub[a] && k < nlev_ - 1) {
     const Level& C = lv_[static_cast<size_t>(k) + 1];
     Res kids[4]; int ci[4], cj[4]; int n = 0;
     for (int dj = 0; dj < 2; ++dj)
@@ -173,7 +188,7 @@ void PathGrid::Build() const {
     Sides out;
     const auto it = idx.find(key(k, i, j));
     if (it != idx.end()) { for (auto& v : out.s) v.push_back(it->second); return out; }
-    if (k >= kLevels - 1) return out;
+    if (k >= nlev_ - 1) return out;
     const Level& C = lv_[static_cast<size_t>(k) + 1];
     Sides ch[4];
     const int ci[4] = {0, 0, 1, 1}, cj[4] = {0, 1, 0, 1};

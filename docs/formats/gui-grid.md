@@ -13,7 +13,9 @@ Status: confirmed from the executable (class and routine addresses of Armada.exe
 - Cell size 100 (float at 0x631cdc). Lines start at the map bound, not at multiples of 100: x lines at `xmin + i*100` for
   `i = 0 .. trunc((xmax-xmin)/100)`, running from z min to z max; z lines at `zmin + j*100` for `j = 0 .. trunc((zmax-zmin)/100)`, running
   from x min to x max. All lines have the same colour (no brighter every fifth line).
-- Colour: float triple (0.149, 0.128, 0.0) at 0x690ac0 (set by 0x57fb60), a dark olive/brown line colour.
+- Colour: UNKNOWN. The line call passes the structure at 0x690ac0 (three floats 0.149 / 0.128 / 0.0 and a dword 0xffffffff, set by 0x57fb60) as the
+  third argument of the device draw method (vtable +0x7c, primitive count 2); it is not clear whether this is a colour, a material or a vertex
+  template. The first guess (dark olive from the three floats) was hardly visible on the device, so the client uses a light grey (0.4) as an estimate.
 - Lines are drawn with the engine's clipped 3D line routine 0x57a6c0 (view transform, frustum clipping).
 - Deviation (decision of the project owner): the client does not limit the grid to the original clipping distance; the far plane of the grid pass
   reaches beyond the map diagonal so the whole grid stays visible when zoomed far out.

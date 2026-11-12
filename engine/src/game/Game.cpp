@@ -3175,13 +3175,13 @@ void Game::OnFrame(double dt) {
     const Mat4 proj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + 14000.0f);
     if (s.grid_visible && s.map_loaded && s.map_current >= 0 && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {
       // Original (docs/formats/gui-grid.md): Terrain-Objekt zeichnet Linien in der Ebene y = 0 ueber die Kartengrenzen des Kopfes, Zelle 100
-      // (Global 0x631cdc), Linienanfang an der Kartengrenze (nicht an Vielfachen von 100), Farbe (0,149 / 0,128 / 0,0) (0x690ac0).
+      // (Global 0x631cdc), Linienanfang an der Kartengrenze (nicht an Vielfachen von 100), Farbe ist NICHT belegt (siehe Doku), hier ein helles Grau als Schaetzung.
       const float cell = 100.0f;
       const float x0 = s.map.bounds[0], x1 = s.map.bounds[1], z0 = s.map.bounds[4], z1 = s.map.bounds[5];  // z im Originalsystem, GL: -z
       const int nx = static_cast<int>((x1 - x0) / cell), nz = static_cast<int>((z1 - z0) / cell);
       std::vector<MarkerRenderer::Marker> gm, gz;
       MarkerRenderer::Marker m;
-      m.color[0] = 0.149f; m.color[1] = 0.128f; m.color[2] = 0.0f;
+      m.color[0] = m.color[1] = m.color[2] = 0.4f;
       m.pos[1] = 0.0f;
       for (int i = 0; i <= nx; ++i) {  // Linien konstanten x, von z0 bis z1
         m.pos[0] = x0 + cell * static_cast<float>(i); m.pos[2] = -z0;

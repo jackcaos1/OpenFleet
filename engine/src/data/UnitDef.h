@@ -10,10 +10,11 @@
 
 namespace fleet {
 
+// Vorgaben wie die Schablone der Exe (0x460ef0): 1 Punkt, Reparaturzeit 1, Rest 0
 struct SubsystemDef {
-  int hit_points = 0;
+  int hit_points = 1;
   float hit_percent = 0;  // Anteil der Treffer, die dieses Teilsystem treffen (Prozent)
-  float repair_time = 0;
+  float repair_time = 1.0f;
   float crew_loss = 0;
   std::vector<std::string> target_hardpoints;
 };

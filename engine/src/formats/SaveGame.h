@@ -31,6 +31,17 @@ struct SaveObject {
   float shield = 0, shield_max = 0;  // GameObject curHealth/maxHealth
   float crew = 0;                    // Craft curCrew
   int sys[5] = {0, 0, 0, 0, 0};      // HitPoints: Schild, Antrieb, Waffen, Lebenserhaltung, Sensoren
+  // Vollstaendiger Zustand je System (CraftSystem, Craft::Load_Save 0x462b80): Active, HitPoints, AdjustedHitPercent, ModifiedRepairTime,
+  // RepairTimeLeft, DisableTimeLeft, PermanentDisable. Gilt nur mit has_sysx, sonst werden aus sys[] Active und HitPoints abgeleitet.
+  struct SysState {
+    bool active = false;
+    int points = 0;
+    float hit_pct = 0, per_point = 0, countdown = 0, disable_timer = 0;
+    bool permanent = false;
+  };
+  SysState sysx[5];
+  bool has_sysx = false;
+  float shield_delay_left = 0;  // curShieldDelay
 };
 
 struct SaveGame {

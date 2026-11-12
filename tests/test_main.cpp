@@ -847,78 +847,322 @@ void TestDying() {
   CHECK(StepDying(&e, 0.01f, &done2) == 0 && !done2);  // unter 0,05 s noch kein Effekt
 }
 
+namespace {
+// Werte der GOG-Installation (RTS_CFG.h): Schild nimmt allen Schaden, kein Bonus auf die Systempunkte
+struct CfgScope {
+  fleet::CombatConfig old;
+  CfgScope() : old(fleet::CombatCfg()) { fleet::CombatCfg() = fleet::CombatConfig{true, 0, 1.0f}; }
+  ~CfgScope() { fleet::CombatCfg() = old; }
+};
+
+// battle.odf: Schild 7.5/10, Antrieb 2/10, Waffen 10/10, Lebenserhaltung 2.5/10, Sensoren 7.5/10, Rumpf 70, kritisch 0.5
+fleet::HealthSpec BattleSpec() {
+  using namespace fleet;
+  HealthSpec s;
+  s.shield_max = 100;
+  s.shield_rate = 2.0f;
+  s.shield_delay = 3.0f;
+  s.crew_max = 400;
+  s.hull_pct = 70;
+  const float pct[kSysCount] = {7.5f, 2.0f, 2.5f, 7.5f, 10.0f};  // Reihenfolge Sys: Schild, Antrieb, Leben, Sensoren, Waffen
+  const float loss[kSysCount] = {2, 5, 3, 2, 2};
+  const float rep[kSysCount] = {60, 5, 10, 60, 60};
+  for (int i = 0; i < kSysCount; ++i) {
+    s.sys[i].points = 10;
+    s.sys[i].hit_pct = pct[i];
+    s.sys[i].crew_loss = loss[i];
+    s.sys[i].repair_time = rep[i];
+  }
+  return s;
+}
+}  // namespace
+
 void TestCombat() {
   using namespace fleet;
-  Health h;
-  ShipRules rules;
+  CfgScope cfg;
   RaceRules race;
-  InitHealth(&h, 100, 2.0f, 3.0f, 200, 400, rules, race);
-  CHECK(h.alive() && !h.derelict());
-  Rng r;
-  HitInfo hit;
-  hit.damage = 60;
-  hit.threshold = 1000;
-  ApplyHit(&h, &r, hit);  // nur Schild
-  CHECK(h.shield == 40.0f && h.crew == 400.0f);
-  // Schaden ueber der Schwelle bei Schild kostet Besatzung: (60-50)*0.5 % von 400 = 20
-  h.shield = 100;
-  hit.threshold = 50;
-  hit.shield_crew_mod = 0.5f;
-  ApplyHit(&h, &r, hit);
-  CHECK(h.crew == 380.0f);
-  // Aufladen erst nach der Verzoegerung, wenn der Schild auf 0 war
-  h.shield = 0;
-  h.shield_was_zero = true;
-  h.since_hit = 0;
-  StepHealth(&h, 2.0f);
-  CHECK(h.shield == 0.0f);
-  StepHealth(&h, 2.0f);
-  CHECK(h.shield > 0.0f && h.shield <= 4.0f);
-  // Durchschlag: Huellentreffer kostet Besatzung, Systemausfall ebenso
-  Health g;
-  rules.hull_pct = 100;
-  for (float& p : rules.hit_pct) p = 0;
-  rules.critical_pct = 0;
-  InitHealth(&g, 0, 0, 3.0f, 100, 1000, rules, race);
-  hit = HitInfo();
-  hit.damage = 10;
-  hit.hull_crew_mod = 1.0f;  // 10 %
-  ApplyHit(&g, &r, hit);
-  CHECK(g.crew == 900.0f);
-  Health e;
-  rules.hull_pct = 0;
-  rules.hit_pct[kEngines] = 100;
-  InitHealth(&e, 0, 0, 3.0f, 100, 1000, rules, race);
-  for (int i = 0; i < 9; ++i) CHECK(ApplyHit(&e, &r, hit) == kSysCount);
-  CHECK(ApplyHit(&e, &r, hit) == kEngines && !e.sys_ok(kEngines));
-  CHECK(e.crew == 950.0f);  // 5 % beim Ausfall
-  // Reparatur: 5 s je Punkt (Rasse Staerke 1)
-  for (int i = 0; i < 5; ++i) StepHealth(&e, 1.01f);
-  CHECK(e.sys_ok(kEngines));
-  // Lebenserhaltung aus: 2 %/s der Besatzung sterben, bei 0 Besatzung herrenlos
-  Health l;
-  ShipRules lr;
-  lr.repair_time[kLife] = 1e9f;
-  InitHealth(&l, 0, 0, 3.0f, 100, 100, lr, race);
-  l.sys[kLife] = 0;
-  for (int i = 0; i < 120; ++i) StepHealth(&l, 1.0f);
-  CHECK(l.derelict() && l.crew == 0.0f);
-  // Kritischer Treffer
-  Health c;
-  ShipRules cr;
-  cr.critical_pct = 100;
-  cr.hull_pct = 0;
-  for (float& p : cr.hit_pct) p = 0;
-  InitHealth(&c, 0, 0, 3.0f, 100, 100, cr, race);
-  ApplyHit(&c, &r, hit);
-  CHECK(!c.alive());
+  race.repair_strength = 1.0f;
+
+  // Trefferwurf (0x464dd0): ganzzahlig 0..99, Anteile in der Reihenfolge Antrieb, Leben, Waffen, Schild, Sensoren, Rumpf, Rest = kritisch
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    int n[7] = {0, 0, 0, 0, 0, 0, 0};
+    for (int roll = 0; roll < 100; ++roll) ++n[HitSystemForRoll(h, roll)];
+    CHECK(n[kEngines] == 2 && n[kLife] == 3 && n[kWeapons] == 10 && n[kShield] == 7 && n[kSensors] == 8 && n[kHitHull] == 70);
+    CHECK(n[kHitCritical] == 0);  // Summe 99,5: der ganzzahlige Wurf erreicht den kritischen Rest nie
+    HealthSpec st;                // Station: Schild 25, Rumpf 70, kritisch 5
+    st.sys[kShield].hit_pct = 25;
+    st.hull_pct = 70;
+    for (int i = 0; i < kSysCount; ++i) st.sys[i].points = i == kShield ? 1 : 0;
+    Health b;
+    InitHealth(&b, st, race);
+    int m[7] = {0, 0, 0, 0, 0, 0, 0};
+    for (int roll = 0; roll < 100; ++roll) ++m[HitSystemForRoll(b, roll)];
+    CHECK(m[kShield] == 25 && m[kHitHull] == 70 && m[kHitCritical] == 5);
+    CHECK(!b.sys_ok(kEngines) && b.sys_ok(kShield));  // Punkte 0 = System fehlt
+    Rng r;
+    int seen[7] = {0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 20000; ++i) ++seen[RollHitSystem(h, &r)];
+    CHECK(seen[kHitHull] > 13000 && seen[kHitHull] < 15000 && seen[kEngines] > 300 && seen[kEngines] < 500);
+  }
+
+  // Schadenspaket (0x465100): Schild nimmt den Schutzanteil, der Rest und der Ueberlauf gehen an die Systeme
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    HitInfo hit;
+    hit.damage = 60;
+    hit.threshold = 1000;
+    ApplyHitTo(&h, kEngines, hit);
+    CHECK(h.shield == 40.0f && h.crew == 400.0f && h.sys[kEngines].points == 10);
+    // Schwelle: Schaden 60 bei Schwelle 50 und Faktor 0,5: Besatzung - (Besatzung x 0,5 x 10 x 0,01 + min(10,1)) = 400 - 21
+    hit.threshold = 50;
+    hit.shield_crew_mod = 0.5f;
+    h.shield = 100;
+    ApplyHitTo(&h, kEngines, hit);
+    CHECK(Near(h.crew, 379.0f) && h.shield == 40.0f);
+    // Schild 0 nach dem Treffer: Aufladeverzoegerung startet
+    ApplyHitTo(&h, kHitHull, hit);  // 40 - 60: Schild leer, 20 Ueberlauf
+    CHECK(h.shield == 0.0f && Near(h.delay_left, 3.0f));
+  }
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 10;
+    HitInfo hit;
+    hit.damage = 25;  // 10 Schild, 15 Ueberlauf
+    ApplyHitTo(&h, kWeapons, hit);
+    CHECK(h.shield == 0.0f && h.sys[kWeapons].points == 0 + (10 - 15 > 0 ? 1 : 0) && !h.sys_ok(kWeapons));
+    // Ausfall: Besatzung - (Besatzung x 2 % + 1) = 400 - 9
+    CHECK(Near(h.crew, 391.0f));
+  }
+  {  // Bruchteile der Systempunkte werden uebertragen (0x4653c9)
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 0.6f;
+    ApplyHitTo(&h, kSensors, hit);
+    CHECK(h.sys[kSensors].points == 10 && Near(h.carry, 0.6f));
+    ApplyHitTo(&h, kSensors, hit);
+    CHECK(h.sys[kSensors].points == 9 && Near(h.carry, 0.2f));
+  }
+  {  // ignoreShield: Schild bleibt, alles geht an die Systeme; Rumpftreffer kostet Besatzung
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    HitInfo hit;
+    hit.damage = 10;
+    hit.ignore_shield = true;
+    hit.hull_crew_mod = 1.0f;
+    ApplyHitTo(&h, kHitHull, hit);
+    CHECK(h.shield == 100.0f && Near(h.crew, 400.0f - (400.0f * 10 * 0.01f + 1.0f)));
+    ApplyHitTo(&h, kEngines, hit);
+    CHECK(h.sys[kEngines].points == 0 && !h.sys_ok(kEngines));
+  }
+  {  // kritischer Treffer: nur mit mindestens einem ganzen Punkt
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 0.5f;
+    ApplyHitTo(&h, kHitCritical, hit);
+    CHECK(h.alive());
+    hit.damage = 1.0f;
+    ApplyHitTo(&h, kHitCritical, hit);
+    CHECK(!h.alive());
+  }
+  {  // Schwierigkeitsfaktor und ausgeschaltete Systempunkte
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    HitInfo hit;
+    hit.damage = 10;
+    hit.damage_scale = 2.0f;
+    ApplyHitTo(&h, kHitHull, hit);
+    CHECK(h.shield == 80.0f);
+    CombatCfg().use_system_hitpoints = false;
+    ApplyHitTo(&h, kHitHull, hit);
+    CHECK(h.shield == 80.0f);  // USE_SYSTEM_HITPOINTS = 0: kein Schaden
+    CombatCfg().use_system_hitpoints = true;
+  }
+  {  // SYSTEM_HITPOINTS_BONUS gilt nur fuer vorhandene Systeme
+    CombatCfg().system_hitpoints_bonus = 200;
+    Health h;
+    HealthSpec s = BattleSpec();
+    s.sys[kSensors].points = 0;
+    InitHealth(&h, s, race);
+    CHECK(h.sys[kEngines].max_points == 210 && h.sys[kSensors].max_points == 0 && !h.sys_ok(kSensors));
+    CombatCfg().system_hitpoints_bonus = 0;
+  }
+
+  // Trefferanteile ausgefallener Systeme gehen zu gleichen Teilen an die lebenden (0x467620) und kommen bei der Reparatur zurueck (0x4676d0)
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 10;
+    ApplyHitTo(&h, kEngines, hit);  // 10 Punkte -> Antrieb faellt aus (2 % auf die vier anderen)
+    CHECK(!h.sys_ok(kEngines) && h.sys[kEngines].hit_pct == 0.0f);
+    CHECK(Near(h.sys[kShield].hit_pct, 7.5f + 0.5f) && Near(h.sys[kLife].hit_pct, 2.5f + 0.5f) && Near(h.sys[kWeapons].hit_pct, 10.5f));
+    float sum = h.hull_pct;
+    for (const SystemBlock& b : h.sys) sum += b.hit_pct;
+    CHECK(Near(sum, 99.5f));
+    // alle anderen ausfallen lassen: Rest sind Rumpf 70 und kritisch 30
+    for (int i : {kLife, kWeapons, kShield, kSensors}) ApplyHitTo(&h, i, hit);
+    int n[7] = {0, 0, 0, 0, 0, 0, 0};
+    for (int roll = 0; roll < 100; ++roll) ++n[HitSystemForRoll(h, roll)];
+    CHECK(n[kHitHull] == 70 && n[kHitCritical] == 30);
+    // Antrieb reparieren (5 s ganz): Anteile kehren zurueck
+    for (int i = 0; i < 700; ++i) StepHealth(&h, 0.1f);
+    CHECK(!h.derelict);
+  }
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 10;
+    ApplyHitTo(&h, kEngines, hit);
+    for (int i = 0; i < 49; ++i) StepHealth(&h, 0.1f);
+    CHECK(!h.sys_ok(kEngines) && h.sys[kEngines].points < 10);
+    for (int i = 0; i < 20; ++i) StepHealth(&h, 0.1f);
+    CHECK(h.sys_ok(kEngines) && h.sys[kEngines].points == 10);
+    CHECK(Near(h.sys[kEngines].hit_pct, 2.0f) && Near(h.sys[kShield].hit_pct, 7.5f) && Near(h.sys[kWeapons].hit_pct, 10.0f));
+  }
+
+  // Reparatur (0x4683d0): Zeit je Punkt = Reparaturzeit / Punkte x Besatzungsfaktor x Rassenstaerke; alle Systeme gleichzeitig; erst wenn
+  // alle Punkte da sind, laeuft das System wieder
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 10;
+    ApplyHitTo(&h, kWeapons, hit);  // Waffen ausgefallen: 60 s / 10 Punkte = 6 s je Punkt
+    ApplyHitTo(&h, kEngines, hit);  // Antrieb: 0,5 s je Punkt
+    StepHealth(&h, 5.9f);
+    CHECK(h.sys[kWeapons].points == 0 && h.sys[kEngines].points == 10 && h.sys_ok(kEngines));  // Antrieb fertig (5 s), Waffen noch nicht
+    StepHealth(&h, 0.2f);
+    CHECK(h.sys[kWeapons].points == 1 && !h.sys_ok(kWeapons));
+    for (int i = 0; i < 540; ++i) StepHealth(&h, 0.1f);
+    CHECK(h.sys[kWeapons].points == 10 && h.sys_ok(kWeapons));
+  }
+  {  // Eigenheit des Originals: ein Treffer, der das System nicht ausfallen laesst, wird beim naechsten Bild sofort um einen Punkt repariert
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    HitInfo hit;
+    hit.damage = 1;
+    ApplyHitTo(&h, kShield, hit);
+    CHECK(h.sys[kShield].points == 9);
+    StepHealth(&h, 0.01f);
+    CHECK(h.sys[kShield].points == 10);
+  }
+  {  // Rasse und Besatzungsstatus: gelb = Faktor repairYellow, mal Rassenstaerke
+    RaceRules rr;
+    rr.repair_strength = 1.5f;
+    rr.crew_yellow = 0.4f;
+    rr.crew_red = 0.2f;
+    rr.repair_yellow = 1.5f;
+    rr.repair_red = 2.0f;
+    Health h;
+    InitHealth(&h, BattleSpec(), rr);
+    h.shield = 0;
+    h.crew = 100;  // 25 % = gelb
+    HitInfo hit;
+    hit.damage = 10;
+    ApplyHitTo(&h, kWeapons, hit);
+    // je Punkt 6 s x 1,5 (Staerke) x 1,5 (gelb) = 13,5 s; der Besatzungsverlust beim Ausfall (2 % + 1) aendert nichts mehr daran, weil
+    // die Zeit beim Ausfall gesetzt wird; danach gilt der Faktor der aktuellen Besatzung
+    h.crew = 100;
+    StepHealth(&h, 13.4f);
+    CHECK(h.sys[kWeapons].points == 0);
+    StepHealth(&h, 0.2f);
+    CHECK(h.sys[kWeapons].points == 1);
+  }
+
+  // Lebenserhaltung aus (0x465f6f): Besatzung - (Besatzung x Verlust x dt x 0,01 + min(dt,1)), unter 1 wird das Schiff Derelict
+  {
+    Health h;
+    HealthSpec s = BattleSpec();
+    s.crew_max = 100;
+    s.sys[kLife].repair_time = 1e9f;
+    InitHealth(&h, s, race);
+    h.sys[kLife].points = 0;
+    h.sys[kLife].active = false;
+    StepHealth(&h, 1.0f);
+    CHECK(Near(h.crew, 100.0f - (100.0f * 2.0f * 1.0f * 0.01f + 1.0f)));
+    for (int i = 0; i < 200 && !h.derelict; ++i) StepHealth(&h, 1.0f);
+    CHECK(h.derelict && h.crew == 0.0f);
+    for (int i = 0; i < kSysCount; ++i) CHECK(!h.sys_ok(i));  // alle Systeme aus
+    CHECK(h.shield == 0.0f);
+  }
+  {  // Besatzung zurueck: Systeme mit allen Punkten laufen wieder, beschaedigte bleiben aus
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.sys[kWeapons].points = 4;
+    SetCrew(&h, 0.5f);
+    CHECK(h.derelict && h.crew == 0.0f && !h.sys_ok(kEngines));
+    SetCrew(&h, 20.0f);
+    CHECK(!h.derelict && h.sys_ok(kEngines) && h.sys_ok(kShield) && !h.sys_ok(kWeapons));
+  }
+  {  // Selbstzerstoerung laeuft: ohne Besatzung explodiert das Schiff
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.self_destruct = true;
+    SetCrew(&h, 0.2f);
+    CHECK(!h.alive() && !h.derelict);
+  }
+  {  // Objekte ohne Besatzung werden nie Derelict
+    Health h;
+    HealthSpec s = BattleSpec();
+    s.crew_max = 0;
+    InitHealth(&h, s, race);
+    SetCrew(&h, 0.0f);
+    CHECK(!h.derelict);
+  }
+
+  // Schildaufladung (0x466b00): erst nach der Verzoegerung, der Rest des Bildes zaehlt
+  {
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.shield = 0;
+    h.delay_left = 3.0f;
+    StepHealth(&h, 2.0f);
+    CHECK(h.shield == 0.0f && Near(h.delay_left, 1.0f));
+    StepHealth(&h, 2.0f);  // 1 s Verzoegerung, dann 1 s Aufladen x 2
+    CHECK(Near(h.shield, 2.0f) && h.delay_left == 0.0f);
+    h.sys[kShield].active = false;  // Schildsystem ausgefallen (Punkte weg, noch nicht repariert): keine Aufladung
+    h.sys[kShield].points = 0;
+    h.sys[kShield].countdown = h.sys[kShield].per_point = 6.0f;
+    StepHealth(&h, 5.0f);
+    CHECK(Near(h.shield, 2.0f));
+  }
+  {  // Zeitweise ausgeschaltet (Spezialwaffe): zaehlt nur bei ausgeschaltetem System, erst danach wieder an
+    Health h;
+    InitHealth(&h, BattleSpec(), race);
+    h.sys[kShield].active = false;
+    h.sys[kShield].disable_timer = 5.0f;
+    StepHealth(&h, 2.0f);
+    CHECK(!h.sys_ok(kShield) && Near(h.sys[kShield].disable_timer, 3.0f));
+    StepHealth(&h, 3.1f);
+    CHECK(h.sys_ok(kShield));
+  }
+
   // Besatzungsstatus
-  Health s;
-  InitHealth(&s, 0, 0, 3.0f, 100, 100, ShipRules(), race);
-  s.crew = 30;
-  CHECK(s.crew_status() == 1 && s.weapon_delay_mult() == 1.0f);
-  s.crew = 10;
-  CHECK(s.crew_status() == 2 && s.weapon_delay_mult() == 2.0f);
+  {
+    Health s;
+    HealthSpec sp;
+    sp.crew_max = 100;
+    InitHealth(&s, sp, race);
+    s.crew = 30;
+    CHECK(s.crew_status() == 1 && s.weapon_delay_mult() == 1.0f);
+    s.crew = 10;
+    CHECK(s.crew_status() == 2 && s.weapon_delay_mult() == 2.0f);
+  }
+
+  Rng r;
   int hits = 0;
   for (int i = 0; i < 4000; ++i) hits += RollHit(&r, 0.25f) ? 1 : 0;
   CHECK(hits > 800 && hits < 1200);

@@ -135,10 +135,22 @@ void ApplyState(SgObject* o, const SgLayout& l, const SaveObject& so) {
   SetFloat(o, l, "maxHealth", so.shield_max);
   SetFloat(o, l, "healthRatio", so.shield_max > 0 ? so.shield / so.shield_max : 1.0f);
   SetFloat(o, l, "curCrew", so.crew);
+  SetFloat(o, l, "curShieldDelay", so.shield_delay_left);
   for (int i = 0; i < 5; ++i) {
     std::string n = kSysNames[i];
-    SetInt(o, l, (n + "HitPoints").c_str(), so.sys[i]);
-    SetBool(o, l, (n + "Active").c_str(), so.sys[i] > 0);
+    if (so.has_sysx) {
+      const SaveObject::SysState& s = so.sysx[i];
+      SetBool(o, l, (n + "Active").c_str(), s.active);
+      SetInt(o, l, (n + "HitPoints").c_str(), s.points);
+      SetFloat(o, l, (n + "AdjustedHitPercent").c_str(), s.hit_pct);
+      SetFloat(o, l, (n + "ModifiedRepairTime").c_str(), s.per_point);
+      SetFloat(o, l, (n + "RepairTimeLeft").c_str(), s.countdown);
+      SetFloat(o, l, (n + "DisableTimeLeft").c_str(), s.disable_timer);
+      SetBool(o, l, (n + "PermanentDisable").c_str(), s.permanent);
+    } else {
+      SetInt(o, l, (n + "HitPoints").c_str(), so.sys[i]);
+      SetBool(o, l, (n + "Active").c_str(), so.sys[i] > 0);
+    }
   }
 }
 
@@ -303,8 +315,22 @@ bool ParseSave(const SgFile& f, SaveGame* g, std::string* err, const std::functi
       num("curHealth", &so.shield);
       num("maxHealth", &so.shield_max);
       num("curCrew", &so.crew);
+      num("curShieldDelay", &so.shield_delay_left);
       for (int i = 0; i < 5; ++i) {
-        if (const SgElem* e = SgField_(o, *l, (std::string(kSysNames[i]) + "HitPoints").c_str())) so.sys[i] = SgGetInt(*e);
+        const std::string n = kSysNames[i];
+        if (const SgElem* e = SgField_(o, *l, (n + "HitPoints").c_str())) so.sys[i] = SgGetInt(*e);
+        SaveObject::SysState& s = so.sysx[i];
+        s.points = so.sys[i];
+        if (const SgElem* e = SgField_(o, *l, (n + "Active").c_str())) {
+          if (!e->data.empty()) s.active = e->data[0] != 0;
+          so.has_sysx = true;
+        }
+        num((n + "AdjustedHitPercent").c_str(), &s.hit_pct);
+        num((n + "ModifiedRepairTime").c_str(), &s.per_point);
+        num((n + "RepairTimeLeft").c_str(), &s.countdown);
+        num((n + "DisableTimeLeft").c_str(), &s.disable_timer);
+        if (const SgElem* e = SgField_(o, *l, (n + "PermanentDisable").c_str()))
+          if (!e->data.empty()) s.permanent = e->data[0] != 0;
       }
       (void)v;
     }

@@ -668,6 +668,10 @@ struct Game::Impl {
     if (val("BLACKHOLE_PATHING_SAFETY_COEFFICIENT", &f)) blackhole_coef = f;
     if (val("SHIP_COMBAT_FLOOR", &f)) w.floor = f;
     if (val("SHIP_COMBAT_CEILING", &f)) w.ceiling = f;
+    CombatConfig& cc = CombatCfg();  // Kampfwerte (Exe-Vorgaben gelten, wenn ein Schluessel fehlt)
+    if (val("USE_SYSTEM_HITPOINTS", &f)) cc.use_system_hitpoints = f != 0;
+    if (val("SYSTEM_HITPOINTS_BONUS", &f)) cc.system_hitpoints_bonus = static_cast<int>(f);
+    if (val("SHIELD_DAMAGE_PROTECTION", &f)) cc.shield_damage_protection = f;
   }
 
   void BuildStars() {
@@ -831,10 +835,26 @@ struct Game::Impl {
   void RestoreState(Spawned* sp, const SaveObject& so) {
     Health& h = sp->hp;
     h.shield = std::max(0.0f, std::min(so.shield, h.shield_max));
-    h.shield_was_zero = h.shield <= 0;
+    h.delay_left = so.shield_delay_left;
     h.crew = std::max(0.0f, std::min(so.crew, h.crew_max));
-    for (int i = 0; i < 5; ++i) h.sys[SysOfFile(i)] = std::max(0.0f, std::min(static_cast<float>(so.sys[i]), h.sys_max));
-    if (h.derelict()) {
+    for (int i = 0; i < 5; ++i) {
+      SystemBlock& b = h.sys[SysOfFile(i)];
+      if (so.has_sysx) {  // vollstaendiger Zustand wie im Original (CraftSystem)
+        const SaveObject::SysState& s = so.sysx[i];
+        b.active = s.active;
+        b.points = s.points;
+        b.hit_pct = s.hit_pct;
+        b.per_point = s.per_point;
+        b.countdown = s.countdown;
+        b.disable_timer = s.disable_timer;
+        b.script_disabled = s.permanent;
+      } else {  // aeltere Staende dieses Clients: nur Punkte; eingeschaltet, solange Punkte uebrig sind
+        b.points = std::max(0, so.sys[i]);
+        b.active = b.points > 0;
+      }
+    }
+    h.derelict = h.crew_max > 0 && h.crew < 1.0f;
+    if (h.derelict) {
       sp->derelict = true;
       sp->team = 0;
     }
@@ -928,7 +948,20 @@ struct Game::Impl {
       so.shield = sp.hp.shield;
       so.shield_max = sp.hp.shield_max;
       so.crew = sp.hp.crew;
-      for (int i = 0; i < 5; ++i) so.sys[i] = static_cast<int>(std::lround(sp.hp.sys[SysOfFile(i)]));
+      so.shield_delay_left = sp.hp.delay_left;
+      so.has_sysx = true;
+      for (int i = 0; i < 5; ++i) {
+        const SystemBlock& b = sp.hp.sys[SysOfFile(i)];
+        so.sys[i] = b.points;
+        SaveObject::SysState& s = so.sysx[i];
+        s.active = b.active;
+        s.points = b.points;
+        s.hit_pct = b.hit_pct;
+        s.per_point = b.per_point;
+        s.countdown = b.countdown;
+        s.disable_timer = b.disable_timer;
+        s.permanent = b.script_disabled;
+      }
       if (sp.team > 0 && sp.team < kSaveTeams) g.teams[sp.team].exists = true;
       g.objects.push_back(so);
     }
@@ -1298,23 +1331,27 @@ struct Game::Impl {
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
     s->odf_l = ToLowerAscii(odf);
     {
-      ShipRules q;
+      HealthSpec q;
       const SubsystemDef* sd[kSysCount] = {&u.shield_generator, &u.engines, &u.life_support, &u.sensors, &u.weapons_sys};
       for (int k = 0; k < kSysCount; ++k) {
-        if (sd[k]->hit_percent > 0) q.hit_pct[k] = sd[k]->hit_percent;
-        if (sd[k]->repair_time > 0) q.repair_time[k] = sd[k]->repair_time;
-        if (sd[k]->crew_loss > 0) q.crew_loss[k] = sd[k]->crew_loss;
-        if (sd[k]->hit_points > 0) q.sys_points = static_cast<float>(sd[k]->hit_points);
+        q.sys[k].points = sd[k]->hit_points;
+        q.sys[k].hit_pct = sd[k]->hit_percent;
+        q.sys[k].crew_loss = sd[k]->crew_loss;
+        q.sys[k].repair_time = sd[k]->repair_time;
       }
-      if (u.hull.hit_percent > 0) q.hull_pct = u.hull.hit_percent;
+      q.hull_pct = u.hull.hit_percent;
       q.critical_pct = u.critical_percent;
-      q.life_loss = u.life_support_loss;
+      q.life_support_loss = u.life_support_loss;
+      q.shield_max = u.max_health;
+      q.shield_rate = u.shield_rate;
+      q.shield_delay = u.shield_delay;
+      q.crew_max = static_cast<float>(u.crew_cost);
       RaceDef rd;
       LoadRaceDef(*odf_lib, u.race, &rd);
       RaceRules rr;
       rr.repair_strength = rd.repair_strength; rr.crew_yellow = rd.crew_yellow; rr.crew_red = rd.crew_red;
       rr.repair_yellow = rd.repair_yellow; rr.repair_red = rd.repair_red; rr.weapon_yellow = rd.weapon_yellow; rr.weapon_red = rd.weapon_red;
-      InitHealth(&s->hp, u.max_health, u.shield_rate, u.shield_delay > 0 ? u.shield_delay : 3.0f, u.max_health > 0 ? 2.0f * u.max_health : 100.0f, static_cast<float>(u.crew_cost), q, rr);
+      InitHealth(&s->hp, q, rr);
     }
     if (u.range_scan > 0) s->scan = u.range_scan;
     if (u.damaged_scan > 0) s->scan_damaged = u.damaged_scan;
@@ -1618,8 +1655,8 @@ struct Game::Impl {
       const float room = std::max(0.0f, t.hp.crew_max - t.hp.crew);
       const float n = std::min(give, room);
       if (n <= 0) { s.beam_id = 0; return; }
-      s.hp.crew -= n;
-      t.hp.crew += n;
+      SetCrew(&s.hp, s.hp.crew - n);
+      SetCrew(&t.hp, t.hp.crew + n);
       if (t.derelict) {
         t.derelict = false;
         t.team = s.team;
@@ -1632,10 +1669,10 @@ struct Game::Impl {
         s.beam_id = 0;
         return;
       }
-      s.hp.crew -= give * 0.5f;
-      t.hp.crew -= give;
-      if (t.hp.crew <= 0) {
-        t.hp.crew = give * 0.5f;
+      SetCrew(&s.hp, s.hp.crew - give * 0.5f);
+      SetCrew(&t.hp, t.hp.crew - give);
+      if (t.hp.derelict) {
+        SetCrew(&t.hp, give * 0.5f);
         t.team = s.team;
         t.target_id = 0;
         t.derelict = false;
@@ -1679,7 +1716,7 @@ struct Game::Impl {
     for (Spawned& s : spawned) {
       StepHealth(&s.hp, dt);
       s.attacked_t = std::max(0.0f, s.attacked_t - dt);
-      if (s.hp.derelict() && !s.derelict) MakeDerelict(s);
+      if (s.hp.derelict && !s.derelict) MakeDerelict(s);
       if (s.beam_id) {
         s.beam_timer -= dt;
         if (s.beam_timer <= 0) {
@@ -3217,7 +3254,7 @@ void Game::OnFrame(double dt) {
         }
       }
       for (const Impl::Spawned& sp : s.spawned) {  // Schild-/Huellenbalken ueber beschaedigten oder ausgewaehlten Objekten
-        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && sp.hp.hull >= sp.hp.hull_max && !sp.hp.damaged())) continue;
+        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
         const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
         const float top[3] = {sp.st.pos[0], sp.st.pos[1] + rw, sp.st.pos[2]};

@@ -1989,7 +1989,7 @@ struct Game::Impl {
         s.auto_move = 0;
         if (s.sel || s.id == sel_id) sel_changed = true;
         s.sel = false;
-        Message(s.label + " zerstoert.");
+        Message(s.label + " zerstoert (Sterbephase " + std::to_string(static_cast<int>(s.die.left)) + " s).");
       }
       bool done = false;
       const int puffs = StepDying(&s.die, dt, &done);
@@ -2020,6 +2020,12 @@ struct Game::Impl {
       }
       if (!done) continue;
       any_gone = true;
+      {  // Diagnose (Debug-Build): Radius gegen shockwaveMinimum, Zahl der Sterbeeffekte
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "Explosion: Radius %.0f, Ringminimum %.0f, Ring %s, Effekte %d", RadiusOf(s), s.shock.minimum,
+                      (s.has_shock && RadiusOf(s) > s.shock.minimum) ? "ja" : "nein", static_cast<int>(fx.size()));
+        Message(buf);
+      }
       if (!s.expl_sound.empty()) PlayEffect(s.expl_sound, 0.6f);
       // Original: das fireball-Objekt (Modell dbName, hier Xplode.sod aus acht Sprite-Knoten); das Modell wird mit Faktor 1,0 geladen,
       // der Objektmassstab (Schiffsradius) bestimmt nur die Schockwelle (0x51b290/0x51b330)

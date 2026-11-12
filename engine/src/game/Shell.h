@@ -29,6 +29,8 @@ struct ShellLayout {
 struct SkirmishSlotView {
   int state = 0;  // 0 nicht vorhanden (Karte hat zu wenige Startplaetze), 1 aktiv
   std::string name, race, team;
+  int relation = 1;  // Beziehung des lokalen Spielers zu diesem Platz im Buendnis-Modus: 0 Feind, 1 neutral, 2 Freund
+  bool ready = false;
 };
 struct SkirmishOptionView {
   int id = 0;  // Index der Option (game/Skirmish.h), Aktions-ID "opt:<id>"
@@ -40,6 +42,7 @@ struct SkirmishOptionView {
 struct SkirmishView {
   SkirmishSlotView slot[8];
   std::vector<SkirmishOptionView> options;
+  bool alliance_mode = false;  // Option "Buendnisse" statt "Teams": je Zeile drei Beziehungstasten statt des Team-Felds
   std::string title, col_name, col_side, col_team, col_game, label_messages;
   std::string map_name;                  // Kartenname unter der Vorschau
   std::string preview;                   // Textur der Kartenvorschau ("" = keine)

@@ -2548,6 +2548,7 @@ struct Game::Impl {
   SkSlot sk_slot[8];
   std::vector<std::pair<int, int>> sk_starts;  // Startpunkte der gewaehlten Karte (Rasterpunkte der .mdf, keine Weltkoordinaten)
   SkirmishSettings sk_set;
+  int sk_rel[8] = {2, 0, 0, 0, 0, 0, 0, 0};    // Beziehung des lokalen Spielers zu jedem Platz im Buendnis-Modus: 0 Feind, 1 neutral, 2 Freund (Vorgabe: Computer = Feind)
   LabelMap labels;                             // label.map (Texte der Menues)
   bool labels_loaded = false;
   int sk_filter = 0;                           // Kartenauswahl: 0 alle, sonst Spielerzahl 8..2
@@ -2645,6 +2646,8 @@ struct Game::Impl {
       sv.name = i == 0 ? "Player" : (sl.kind == 2 ? Lbl("computer_medium", "Computer") : Lbl("empty", "Empty Slot"));
       sv.race = sl.kind == 0 ? std::string() : Lbl(kSkRaceKeys[std::min(4, std::max(0, sl.race))], kSkRaceKeys[std::min(4, std::max(0, sl.race))]);
       sv.team = Lbl(("team_" + std::to_string(sl.team)).c_str(), ("Team " + std::to_string(sl.team)).c_str());
+      sv.relation = sk_rel[i];
+      sv.ready = sl.kind != 0;  // Computer sind immer bereit; der lokale Spieler gilt als bereit (Annahme fuer den Einzelspieler)
     }
     for (const SkOptDef& d : SkOptDefs()) {
       SkirmishOptionView ov;
@@ -2654,6 +2657,7 @@ struct Game::Impl {
       ov.text = SkOptText(labels, sk_set, d.id);
       v.options.push_back(ov);
     }
+    v.alliance_mode = sk_set.v[kOptAlliance] == 1;
     v.title = Lbl("title", "GAME SETUP");
     v.col_name = Lbl("player_name", "Player Name");
     v.col_side = Lbl("side", "Side");
@@ -2811,6 +2815,10 @@ struct Game::Impl {
     } else if (id.compare(0, 10, "slot_race:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i >= 0 && i < 8) sk_slot[i].race = (sk_slot[i].race + 1) % 5;
+    } else if (id.compare(0, 9, "slot_rel:") == 0) {
+      const int i = std::atoi(id.c_str() + 9);
+      const size_t c = id.find(':', 9);
+      if (i > 0 && i < 8 && c != std::string::npos) sk_rel[i] = std::atoi(id.c_str() + c + 1);
     } else if (id.compare(0, 10, "slot_team:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i >= 0 && i < 8) sk_slot[i].team = sk_slot[i].team % 8 + 1;

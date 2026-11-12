@@ -70,6 +70,12 @@ In portrait format (height > width) the left half (players, messages; reference 
 one above the other from two cut-outs of `mpsbg.bmp`; below them the buttons: previous menu and main menu side by side, launch squeezed to the screen width underneath.
 Landscape stays as in the original. The map selection popup is scaled to the screen width in portrait. The same layout is to be used for the multiplayer match screen.
 
+## Button bitmaps (verified from the constructor arguments)
+`ShellButton` takes three bitmaps: normal, pressed / selected, disabled (e.g. `scrollup1`, `scrollup3`, `scrollup2`; `alfriend1`, `alfriend3`, `alfriend2`; the plain
+buttons use `1, 2, 3` in that order). In the alliance column the selected relation uses state 3 (coloured), the others state 1, the own row state 2 (grey).
+In "alliances" mode (toggle at y 276, state 1) the team combo of each row is replaced by the three relation buttons (enemy x 261, neutral x 280, friend x 299, 19 x 19);
+the ready lamp (`mpsready.bmp`, 10 x 10) lies at x 326 on the lamp of the row.
+
 ## Open
 - Exact column x of the player row items and the row start (client uses y = 57 + 19 i from the background bitmap).
 - Behaviour of each option on the session (which options the single player instant action honours).

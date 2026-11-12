@@ -106,11 +106,26 @@ void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, fl
     if (on) {  // Auswahlfelder der Zeile (Combo-Boxen 145 / 111 / 58 x 19), Grafiken mpsplapd / mpsracpd / mpsteapd
       Plate(L, fl, "mpsplapd", pressed == "slot_name:" + n ? 2 : 1, 5, y - 1, 145, 19);
       Plate(L, fl, "mpsracpd", pressed == "slot_race:" + n ? 2 : 1, 149, y - 1, 111, 19);
-      Plate(L, fl, "mpsteapd", pressed == "slot_team:" + n ? 2 : 1, 261, y - 1, 58, 19);
+      if (!sk->alliance_mode) Plate(L, fl, "mpsteapd", pressed == "slot_team:" + n ? 2 : 1, 261, y - 1, 58, 19);
+      if (v.ready) Plate(L, fl, "mpsready", 1, 326, y + 2, 10, 10);  // Bereit-Lampe (10 x 10, x 326); Grafik hat nur einen Zustand (Datei mpsready.bmp)
+    }
+    if (on && sk->alliance_mode) {  // Beziehungstasten 261 / 280 / 299 (19 x 19): Feind, neutral, Freund; gewaehlt = Grafik 3 (farbig), sonst 1, eigener Platz 2 (grau)
+      static const char* kBase[3] = {"alenemy", "alneutr", "alfriend"};
+      static const float kX[3] = {261, 280, 299};
+      for (int r = 0; r < 3; ++r) {
+        const int st = i == 0 ? 2 : (v.relation == r ? 3 : 1);
+        Plate(L, fl, kBase[r], st, kX[r], y - 1, 19, 19);
+        if (i > 0) {
+          ShellButton b;
+          b.id = "slot_rel:" + n + ":" + std::to_string(r);
+          b.rect = {fl.ox + kX[r] * fl.s, fl.oy + (y - 1) * fl.s, 19 * fl.s, 19 * fl.s};
+          L->buttons.push_back(b);
+        }
+      }
     }
     Slot(L, fl, font, 7, y, 142, 14, v.name, i == 0 ? kGreen : kInk, false, on && i > 0 ? "slot_name:" + n : "", on, pressed == "slot_name:" + n, false);
     Slot(L, fl, font, 151, y, 109, 14, v.race, kInk, false, on ? "slot_race:" + n : "", on, pressed == "slot_race:" + n, false);
-    Slot(L, fl, font, 262, y, 55, 14, v.team, kInk, false, on ? "slot_team:" + n : "", on, pressed == "slot_team:" + n, false);
+    if (!sk->alliance_mode) Slot(L, fl, font, 262, y, 55, 14, v.team, kInk, false, on ? "slot_team:" + n : "", on, pressed == "slot_team:" + n, false);
   }
   for (const SkirmishOptionView& o : sk->options) {
     const std::string id = "opt:" + std::to_string(o.id);
@@ -145,9 +160,9 @@ void BuildSkirmishMap(ShellLayout* L, const Frame& f, float px, float py, const 
   Slot(L, f, font, px + 19, py + 258 + 8, 112, 14, sk->btn_select, kInk, true, "mapsel_ok", sk->selected >= 0, false, false);
   Plate(L, f, "navmain", pressed == "mapsel_cancel" ? 2 : 1, px + 260, py + 258, 112, 30);
   Slot(L, f, font, px + 260, py + 258 + 8, 112, 14, sk->btn_cancel, kInk, true, "mapsel_cancel", true, false, false);
-  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrollup") + (pressed == "mapsel_up" ? "2" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 27) * f.s, 14 * f.s, 21 * f.s));
+  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrollup") + (pressed == "mapsel_up" ? "3" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 27) * f.s, 14 * f.s, 21 * f.s));
   { ShellButton b; b.id = "mapsel_up"; b.enabled = sk->can_up; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 22) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
-  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrolldn") + (pressed == "mapsel_down" ? "2" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 235) * f.s, 14 * f.s, 20 * f.s));
+  L->draws.push_back(Quad(std::string("bitmaps/multiset/scrolldn") + (pressed == "mapsel_down" ? "3" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 235) * f.s, 14 * f.s, 20 * f.s));
   { ShellButton b; b.id = "mapsel_down"; b.enabled = sk->can_down; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 230) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
   for (size_t k = 0; k < sk->maps.size() && k < 13; ++k) {
     const std::string id = "mapsel:" + std::to_string(k);

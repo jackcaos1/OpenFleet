@@ -13,7 +13,8 @@ int main(int argc, char** argv) {
   if (argc > 5 && std::string(argv[5]) == "shell") {  // Hauptmenue: hud_dump <ordner> <b> <h> <rasse> shell <main|single> [gedrueckt]
     const std::string sc = argc > 6 ? argv[6] : "main";
     SkirmishView sv;
-    for (int i = 0; i < 4; ++i) { sv.slot[i].state = 1; sv.slot[i].name = i == 0 ? "Spieler" : "Computer"; sv.slot[i].race = "Klingonen"; sv.slot[i].team = "Team " + std::to_string(i + 1); }
+    for (int i = 0; i < 4; ++i) { sv.slot[i].state = 1; sv.slot[i].name = i == 0 ? "Spieler" : "Computer"; sv.slot[i].race = "Klingonen"; sv.slot[i].team = "Team " + std::to_string(i + 1); sv.slot[i].relation = i % 3; sv.slot[i].ready = true; }
+    sv.alliance_mode = argc > 8;
     sv.title = "GAME SETUP"; sv.col_name = "Player Name"; sv.col_side = "Side"; sv.col_team = "Teams"; sv.col_game = "Game Name"; sv.label_messages = "Messages";
     sv.btn_prev = "Previous Menu"; sv.btn_launch = "LAUNCH"; sv.btn_main = "Main Menu"; sv.btn_select_map = "SELECT MAP"; sv.map_name = "2blue"; sv.preview = "bzn/2blue.bmp";
     const char* kOpt[18] = {"Normal Game", "Max Players: 8", "Ping Filter Off", "Game Open", "3000", "3500", "100", "Minimal Units", "Standard Tech", "Teams", "Give Units On", "Infinite Moons Off", "Ferengi On", "Directors Cut Off", "Minimap Hidden", "Fixed Placement", "Show None", "Shroud On, Fog On"};

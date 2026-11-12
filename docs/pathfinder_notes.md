@@ -95,3 +95,8 @@ Aufwand grob: ~2500 Instruktionen + Hilfsklassen (Listen 0x406cb0/0x406c50/0x401
   (+0x118) frei und legt ein neues an der EIGENEN Position an (+0x12c): Das Schiff bekommt also das Ziel "hier bleiben" und fliegt nicht los. Der Client verwirft in diesem Fall
   den Zielbefehl (ShipState::has_target = false). UNBEKANNT bleibt der Pfad fuer den Zustand 0x19 (springt nach 0x42e3e6).
 
+## Nachtrag: Kartengrenzen (gelesen)
+- Die Grenzen des Planers sind die sechs Werte aus dem Kopf der Karte (Load_Save 0x44abb0 schreibt sie nach 0x6343f0..0x634404; Reihenfolge in der Datei: x min, x max, y min, y max, z min, z max;
+  die y-Werte (-28.5 / 105.5) gehoeren zu Boden und Decke). Der Planer (0x408e80/0x4093b0) rechnet Weite und Hoehe als Maximum minus Minimum in x und z. Der Client nahm bisher die Ausdehnung der
+  Objekte plus 1000; jetzt gelten die Kartengrenzen (Rasterversatz und damit die Zellgrenzen des Quadtrees stimmen dadurch mit dem Original ueberein).
+

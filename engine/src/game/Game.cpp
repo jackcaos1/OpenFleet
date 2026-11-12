@@ -570,10 +570,15 @@ struct Game::Impl {
       map_obstacles.push_back(ob);
     }
     // Pfadraster: Zellgroesse HIGHEST_QUADTREE_GRID_RESOLUTION (50). Asteroidenfeld: Quadrat mit Halbkante ASTEROID_BELT_PATHING_DISTANCE/2 (150/2).
-    float lo[2] = {-1500, -1500}, hi[2] = {1500, 1500};
-    for (const BznObject& o : map.objects) {
-      lo[0] = std::min(lo[0], o.pos[0] - 1000); hi[0] = std::max(hi[0], o.pos[0] + 1000);
-      lo[1] = std::min(lo[1], -o.pos[2] - 1000); hi[1] = std::max(hi[1], -o.pos[2] + 1000);   // Originalsystem: z = -z_GL
+    // Original (0x44abb0 liest die Grenzen aus der Karte nach 0x6343f0..0x634404, 0x408e80/0x4093b0 bilden daraus das Raster): Kartengrenzen x und z des Kopfes,
+    // Originalsystem (z wie in der Datei). Nur wenn die Datei keine gueltigen Grenzen hat, dient die Ausdehnung der Objekte als Notbehelf.
+    float lo[2] = {map.bounds[0], map.bounds[4]}, hi[2] = {map.bounds[1], map.bounds[5]};
+    if (!(hi[0] > lo[0] && hi[1] > lo[1])) {
+      lo[0] = lo[1] = -1500; hi[0] = hi[1] = 1500;
+      for (const BznObject& o : map.objects) {
+        lo[0] = std::min(lo[0], o.pos[0] - 1000); hi[0] = std::max(hi[0], o.pos[0] + 1000);
+        lo[1] = std::min(lo[1], -o.pos[2] - 1000); hi[1] = std::max(hi[1], -o.pos[2] + 1000);   // Originalsystem: z = -z_GL
+      }
     }
     path_grid.Init(lo[0], lo[1], hi[0], hi[1], 50.0f);
     for (const MapObstacle& mo : map_obstacles)

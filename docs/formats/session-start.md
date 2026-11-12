@@ -24,8 +24,11 @@ Verified in the executable (GOG Armada.exe, addresses given) or in the data file
   through 0x448c60. For a team that has a player, the values come from the lobby game settings (settings object fields +0x58, +0x5c, +0x60; the
   game mode in +0x80 decides: mode 3 uses the RTS_CFG.h globals 3500 / 4000 instead) and are scaled per player: `value * playerHandicap / 100`
   (handicap from settings +0x94 + 0x4c * slot, 100 if handicaps are off, byte +0x4e). The lobby option lists for these settings (arrays at
-  0x68aa4c, 0x68a9f4, 0x68a9dc, five entries each) are read from the language files (section `multiplayer_setup`, keys `sd_value_2..5`, `sc_value_2..`,
-  `mo_value_2..`), which are obfuscated (`*.ldl`, not decoded yet), so the concrete low / normal / high values are not known.
+  0x68aa4c, 0x68a9f4, 0x68a9dc, five entries each) are read from the plain text file `label.map` (section `multiplayer_setup`; the reader 0x4740f0 opens
+  `label.map` and looks for `<section> {` and the key). The option values are: starting dilithium `sd_value_1..5` = 3000, 4000, 5000, 7500, 10000;
+  starting crew `sc_value_1..5` = 3500, 5000, 7500, 10000, 99999; officers `mo_value_1..5` = 100, 150, 200, 250, 999. Which entry is the default and
+  which game mode a skirmish uses is not yet read. The `*.ldl` files (obfuscated) are not needed for the lobby; the game itself calls the string
+  library with the file name `lang.txt` (0x43ff37), which does not exist in the installation, so the `.ldl` role is unclear.
 
 ## Open (not verified)
 - What happens to the start objects of slots nobody plays (a 4 player map with 2 players). The client keeps them as they are in the map.
@@ -33,5 +36,5 @@ Verified in the executable (GOG Armada.exe, addresses given) or in the data file
   start objects carry fixed prefixes (4hub: team 1 federation, team 4 borg). The client keeps the map's objects; the HUD race follows slot 1.
 - How maps without any start object (4first, 4nirvana, 285 and 266 environment objects only) get their start units. The routine is not found yet; the
   client starts them empty and says so in a message.
-- The concrete start dilithium / crew for the lobby options "few / normal / many" (needs the decoded LDL files) and which game mode value a skirmish uses.
+- Which of the five lobby values is the default and which game mode value a skirmish uses.
 - The local player number of the human in a skirmish (assumed to be slot 1 = `Camera_1`).

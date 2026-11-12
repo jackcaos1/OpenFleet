@@ -15,7 +15,10 @@ Status: confirmed from the executable (class and routine addresses of Armada.exe
   from x min to x max. All lines have the same colour (no brighter every fifth line).
 - Colour: float triple (0.149, 0.128, 0.0) at 0x690ac0 (set by 0x57fb60), a dark olive/brown line colour.
 - Lines are drawn with the engine's clipped 3D line routine 0x57a6c0 (view transform, frustum clipping).
-- Unknown: the alpha/fourth argument of the line call ([0x6d4aa0 + 0x14]), whether lines are depth-tested against ships.
+- Deviation (decision of the project owner): the client does not limit the grid to the original clipping distance; the far plane of the grid pass
+  reaches beyond the map diagonal so the whole grid stays visible when zoomed far out.
+- Unknown: the alpha/fourth argument of the line call ([0x6d4aa0 + 0x14]), whether lines are depth-tested against ships (the pass switches a state flag on the camera object off before drawing and on afterwards, 0x5b8220;
+  its meaning was not resolved). The client draws the grid before the models without depth test, so ships always cover it.
 
 Client (game/Game.cpp): follows these rules; the earlier white grid with 75-unit cells around the object centre was an own estimate.
 Not implemented: the placement grid for stations (STATION_PLACEMENT_GRID_SIZE 50, "footprint"/"valid_build" feature at 0x516200).

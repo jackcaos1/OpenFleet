@@ -3194,10 +3194,14 @@ void Game::OnFrame(double dt) {
         gz.push_back(m);
       }
       // Marker haben eine einheitliche Laenge: beide Richtungen getrennt zeichnen
+      // Abweichung vom Original (Sichtweite 10000, Entscheidung des Projektinhabers): wir zoomen weiter heraus, das Gitter soll immer ganz
+      // sichtbar sein; die hintere Ebene reicht deshalb bis ueber die Kartendiagonale hinaus.
+      const float diag = std::sqrt((x1 - x0) * (x1 - x0) + (z1 - z0) * (z1 - z0));
+      const Mat4 gproj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + std::max(14000.0f, 1.5f * diag));
       s.grid_markers.Set(gm, z1 - z0);
-      s.grid_markers.Draw(proj * view, 1.0f);
+      s.grid_markers.Draw(gproj * view, 1.0f);
       s.grid_markers.Set(gz, x1 - x0);
-      s.grid_markers.Draw(proj * view, 1.0f);
+      s.grid_markers.Draw(gproj * view, 1.0f);
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));

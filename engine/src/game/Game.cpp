@@ -3251,6 +3251,7 @@ void Game::OnResize(int width, int height) {
 void Game::OnFrame(double dt) {
   Impl& s = *impl_;
   s.clock += dt;
+  if (dt > 0.3 && s.in_game) s.Message("Langer Frame: " + std::to_string(static_cast<int>(dt * 1000.0)) + " ms");  // Diagnose fuer "App reagiert nicht"
   s.ApplyPending();
   s.ui = BuildUiLayout(s.width, s.height, s.CurrentUiState());
   int bar = std::min(static_cast<int>(s.ui.bar_height), s.height - 1);
@@ -3563,7 +3564,7 @@ void Game::OnFrame(double dt) {
           put(kIcon[ri], px, py, sz * 1.46f, sz, 1.0f);
         }
         if (sy.sel) {  // Auswahlecken (GCselect, 3x3-Rahmen)
-          const float h = 0.5f * sz * 1.5f, q = 22.0f * std::max(1.0f, H / 700.0f);
+          const float h = 0.85f * sz, q = 22.0f * std::max(1.0f, std::floor(H / 600.0f));  // Zelle sitzt mit ihrer Aussenecke auf der Rahmenecke
           for (const auto& corner : {std::make_tuple("selection.00", -h, -h), std::make_tuple("selection.20", h, -h), std::make_tuple("selection.02", -h, h), std::make_tuple("selection.22", h, h)}) {
             HudDraw d;  // Auswahlecken in Weiss, damit die Auswahl auffaellt (nicht in der Teamfarbe)
             float uv[4];
@@ -3571,9 +3572,11 @@ void Game::OnFrame(double dt) {
             if (!s.hud_data.Sprite(std::get<0>(corner), &d.tex, uv, &add)) continue;
             d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
             d.additive = add;
-            d.x = px + std::get<1>(corner) - 0.5f * q; d.y = py + std::get<2>(corner) - 0.5f * q; d.w = q; d.h = q;
+            const float ox = std::get<1>(corner), oy = std::get<2>(corner);
+            d.x = std::floor(px + ox - (ox > 0 ? q : 0.0f)); d.y = std::floor(py + oy - (oy > 0 ? q : 0.0f)); d.w = q; d.h = q;
             d.rgba[0] = d.rgba[1] = d.rgba[2] = d.rgba[3] = 1.0f;
             dr.push_back(d);
+            dr.push_back(d);  // die Bogen sind 1 Pixel duenn und additiv: doppelt gezeichnet, damit sie sichtbar bleiben
           }
         }
       }

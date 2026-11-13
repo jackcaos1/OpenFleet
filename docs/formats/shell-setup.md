@@ -44,7 +44,7 @@ Left column (x = 385, width 128): toggle 295 `hide_minimap_on/off`; toggle 318 `
 `show_available`, `show_allies`, `show_none`; combo 364 (id 2139, settings +0x4f/+0x50) `shroud_fog_on_on`, `_off_on`, `_on_off`, `_off_off`.
 
 ## Player rows
-Eight rows (`ComboBoxArray` items, row height 19, column x 5 / 150 / 262 as measured from the background), each with: a ready indicator (x 326, 10 x 10,
+Eight rows (`ComboBoxArray` items; row y = 54 + 19 i, loop 0x5386eb; height 19; columns name x 5 w 145, race x 150 w 111, team x 261 w 58, directly adjacent), each with: a ready indicator (x 326, y = row y + 4, 10 x 10,
 `mpsnready.bmp` / `mpsready.bmp`), the three alliance markers (19 x 19, x 261 / 280 / 299: `alenemy`, `alneutr`, `alfriend` 1..3), a name combo (id 5, 145 x 19,
 entries `empty`, `computer_easy`, `computer_medium`, `computer_hard`, and `kick` for other players' rows), a race combo (id 150, 111 x 19: `federation`, `borg`,
 `romulan`, `klingon`, `random`) and a team combo (id 261, 58 x 19: `team_1` .. `team_8`). A bullet text (15, 19 x 19) marks the row.
@@ -83,7 +83,6 @@ field stays empty. Maximum players: the field selects entry `8 - n` where n is t
 default value 3 (the list of this field is rebuilt depending on setting +0x70, 0x539c3f; not decoded).
 
 ## Open
-- Exact column x of the player row items and the row start (client uses y = 57 + 19 i from the background bitmap).
 - The visibility field (list depends on +0x70).
 - Behaviour of each option on the session (which options the single player instant action honours).
 - The map selection screen (`multiplayer_map_select`) and the chat / message list.

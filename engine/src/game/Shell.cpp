@@ -99,32 +99,33 @@ void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, fl
   Slot(L, F(385), font, 385, 7, 100, 14, sk->col_game, kWhite, false, "", true, false, false);
   Slot(L, F(5), font, 5, 234, 80, 14, sk->label_messages, kWhite, false, "", true, false, false);
   for (int i = 0; i < 8; ++i) {
-    const float y = 57.0f + 19.0f * static_cast<float>(i);  // Zeilenabstand aus dem Hintergrundbild (Zeilenhoehe 19 laut Code)
+    const float ry = 54.0f + 19.0f * static_cast<float>(i);  // Zeilen: y = 54 + 19 i, Hoehe 19 (Schleife 0x5386eb: edi = 0x36, += 0x13, < 0xce)
+    const float y = ry + 3.0f;                                // Textzeile in der Mitte des Felds
     const SkirmishSlotView& v = sk->slot[i];
     const bool on = v.state == 1;
     const std::string n = std::to_string(i);
     if (on) {  // Auswahlfelder der Zeile (Combo-Boxen 145 / 111 / 58 x 19), Grafiken mpsplapd / mpsracpd / mpsteapd
-      Plate(L, fl, "mpsplapd", pressed == "slot_name:" + n ? 2 : 1, 5, y - 1, 145, 19);
-      Plate(L, fl, "mpsracpd", pressed == "slot_race:" + n ? 2 : 1, 149, y - 1, 111, 19);
-      if (!sk->alliance_mode) Plate(L, fl, "mpsteapd", pressed == "slot_team:" + n ? 2 : 1, 261, y - 1, 58, 19);
-      if (v.ready) Plate(L, fl, "mpsready", 1, 326, y + 2, 10, 10);  // Bereit-Lampe (10 x 10, x 326); Grafik hat nur einen Zustand (Datei mpsready.bmp)
+      Plate(L, fl, "mpsplapd", pressed == "slot_name:" + n ? 2 : 1, 5, ry, 145, 19);  // Name: x 5, w 145
+      Plate(L, fl, "mpsracpd", pressed == "slot_race:" + n ? 2 : 1, 150, ry, 111, 19);  // Rasse: x 150 (0x96), w 111
+      if (!sk->alliance_mode) Plate(L, fl, "mpsteapd", pressed == "slot_team:" + n ? 2 : 1, 261, ry, 58, 19);  // Team: x 261 (0x105), w 58
+      if (v.ready) Plate(L, fl, "mpsready", 1, 326, ry + 4, 10, 10);  // Bereit-Lampe (10 x 10, x 326); Grafik hat nur einen Zustand (Datei mpsready.bmp)
     }
     if (on && sk->alliance_mode) {  // Beziehungstasten 261 / 280 / 299 (19 x 19): Feind, neutral, Freund; gewaehlt = Grafik 3 (farbig), sonst 1, eigener Platz 2 (grau)
       static const char* kBase[3] = {"alenemy", "alneutr", "alfriend"};
       static const float kX[3] = {261, 280, 299};
       for (int r = 0; r < 3; ++r) {
         const int st = i == 0 ? 2 : (v.relation == r ? 3 : 1);
-        Plate(L, fl, kBase[r], st, kX[r], y - 1, 19, 19);
+        Plate(L, fl, kBase[r], st, kX[r], ry, 19, 19);
         if (i > 0) {
           ShellButton b;
           b.id = "slot_rel:" + n + ":" + std::to_string(r);
-          b.rect = {fl.ox + kX[r] * fl.s, fl.oy + (y - 1) * fl.s, 19 * fl.s, 19 * fl.s};
+          b.rect = {fl.ox + kX[r] * fl.s, fl.oy + ry * fl.s, 19 * fl.s, 19 * fl.s};
           L->buttons.push_back(b);
         }
       }
     }
     Slot(L, fl, font, 7, y, 142, 14, v.name, i == 0 ? kGreen : kInk, false, on && i > 0 ? "slot_name:" + n : "", on, pressed == "slot_name:" + n, false);
-    Slot(L, fl, font, 151, y, 109, 14, v.race, kInk, false, on ? "slot_race:" + n : "", on, pressed == "slot_race:" + n, false);
+    Slot(L, fl, font, 152, y, 107, 14, v.race, kInk, false, on ? "slot_race:" + n : "", on, pressed == "slot_race:" + n, false);
     if (!sk->alliance_mode) Slot(L, fl, font, 262, y, 55, 14, v.team, kInk, false, on ? "slot_team:" + n : "", on, pressed == "slot_team:" + n, false);
   }
   for (const SkirmishOptionView& o : sk->options) {

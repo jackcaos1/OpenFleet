@@ -149,7 +149,7 @@ void BuildSkirmish(ShellLayout* L, const Frame& base, bool portrait, float W, fl
   Slot(L, fb, font, xm, py1 + 8, 112, 14, sk->btn_main, kInk, true, "mainmenu", true, false, false);
 }
 
-// Kartenauswahl (Armada.exe 0x530b70, Hintergrund bitmaps/misc/DBmsBG.bmp 393 x 290, Elemente relativ dazu). Platzierung im Bild und Zeilenabstand der Liste sind geschaetzt.
+// Kartenauswahl (Armada.exe 0x530b70, Hintergrund bitmaps/misc/DBmsBG.bmp 393 x 290, Elemente relativ dazu). Platzierung (120, 91) und Zeilen (x 15, y 30 + 16 k, 345 x 14, 14 Zeilen) aus 0x530d73 / 0x53128d.
 void BuildSkirmishMap(ShellLayout* L, const Frame& f, float px, float py, const std::string& pressed, const HudData* font, const SkirmishView* sk) {
   static const float kInk[3] = {0.05f, 0.04f, 0.03f}, kGold[3] = {1.0f, 0.88f, 0.35f}, kWhite[3] = {1, 1, 1};
   SkirmishView empty;
@@ -164,9 +164,9 @@ void BuildSkirmishMap(ShellLayout* L, const Frame& f, float px, float py, const 
   { ShellButton b; b.id = "mapsel_up"; b.enabled = sk->can_up; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 22) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
   L->draws.push_back(Quad(std::string("bitmaps/multiset/scrolldn") + (pressed == "mapsel_down" ? "3" : "1") + ".bmp", f.ox + (px + 376) * f.s, f.oy + (py + 235) * f.s, 14 * f.s, 20 * f.s));
   { ShellButton b; b.id = "mapsel_down"; b.enabled = sk->can_down; b.rect = {f.ox + (px + 366) * f.s, f.oy + (py + 230) * f.s, 30 * f.s, 30 * f.s}; L->buttons.push_back(b); }
-  for (size_t k = 0; k < sk->maps.size() && k < 13; ++k) {
+  for (size_t k = 0; k < sk->maps.size() && k < 14; ++k) {  // 14 Zeilen: y = 30 + 16 k, h 14, bis y < 254 (Schleife 0x53128d)
     const std::string id = "mapsel:" + std::to_string(k);
-    Slot(L, f, font, px + 15, py + 48 + 14.0f * static_cast<float>(k), 345, 12, sk->maps[k], static_cast<int>(k) == sk->selected ? kGold : kWhite, false, id, true, pressed == id,
+    Slot(L, f, font, px + 15, py + 30 + 16.0f * static_cast<float>(k), 345, 14, sk->maps[k], static_cast<int>(k) == sk->selected ? kGold : kWhite, false, id, true, pressed == id,
          static_cast<int>(k) == sk->selected);
   }
 }
@@ -248,7 +248,7 @@ ShellLayout BuildShell(ShellScreen screen, int width, int height, const std::str
       L.draws.back().rgba[0] = L.draws.back().rgba[1] = L.draws.back().rgba[2] = 0.0f;
       L.draws.back().rgba[3] = 0.45f;
       Frame fp = f;
-      float px = (640.0f - 393.0f) * 0.5f, py = (480.0f - 290.0f) * 0.5f;  // mittig (Platzierung geschaetzt)
+      float px = 120.0f, py = 91.0f;  // Lage des Dialogs im Bezug 640 x 480 (WM_INITDIALOG 0x530d73: Client-Ursprung + (120, 91))
       if (portrait) {  // Hochformat: Fenster auf die Bildschirmbreite skaliert
         fp.s = std::min(W / 410.0f, H / 310.0f);
         fp.ox = 0.5f * (W - 393.0f * fp.s);

@@ -2630,9 +2630,15 @@ struct Game::Impl {
       }
     }
     SkLoadMapInfo();
+    SkMaxPlayersFromMap();
     shell_screen = ShellScreen::Skirmish;
   }
 
+  // "Maximale Spieler" folgt der Karte: Auswahlfeld = 8 - Zahl (0x539e44)
+  void SkMaxPlayersFromMap() {
+    const int n = sk_sel < 0 ? 8 : std::min(8, std::max(2, static_cast<int>(sk_starts.size())));
+    sk_set.v[kOptMaxPlayers] = 8 - n;
+  }
   int SkSlots() const { return sk_sel < 0 ? 8 : std::min<int>(8, static_cast<int>(sk_starts.size())); }
 
   SkirmishView SkView() const {
@@ -2679,9 +2685,9 @@ struct Game::Impl {
     // Kartenauswahl
     const std::vector<int> fm = FilteredMaps();
     v.can_up = sk_first > 0;
-    v.can_down = sk_first + 13 < static_cast<int>(fm.size());
-    for (int k = 0; k < 13 && sk_first + k < static_cast<int>(fm.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(fm[static_cast<size_t>(sk_first + k)])]);
-    v.selected = sk_pick - sk_first >= 0 && sk_pick - sk_first < 13 && sk_pick < static_cast<int>(fm.size()) ? sk_pick - sk_first : -1;
+    v.can_down = sk_first + 14 < static_cast<int>(fm.size());
+    for (int k = 0; k < 14 && sk_first + k < static_cast<int>(fm.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(fm[static_cast<size_t>(sk_first + k)])]);
+    v.selected = sk_pick - sk_first >= 0 && sk_pick - sk_first < 14 && sk_pick < static_cast<int>(fm.size()) ? sk_pick - sk_first : -1;
     {
       static const char* kF[8] = {"all_maps", "maximum_players_8", "maximum_players_7", "maximum_players_6", "maximum_players_5", "maximum_players_4", "maximum_players_3", "maximum_players_2"};
       const int fi = sk_filter == 0 ? 0 : 9 - sk_filter;
@@ -2795,10 +2801,11 @@ struct Game::Impl {
       if (sk_pick >= 0 && sk_pick < static_cast<int>(fm.size())) {
         sk_sel = fm[static_cast<size_t>(sk_pick)];
         SkLoadMapInfo();
+        SkMaxPlayersFromMap();
       }
       shell_screen = ShellScreen::Skirmish;
     } else if (id == "mapsel_up") sk_first = std::max(0, sk_first - 6);
-    else if (id == "mapsel_down") sk_first = std::min(std::max(0, static_cast<int>(FilteredMaps().size()) - 13), sk_first + 6);
+    else if (id == "mapsel_down") sk_first = std::min(std::max(0, static_cast<int>(FilteredMaps().size()) - 14), sk_first + 6);
     else if (id == "mapsel_filter") {
       sk_filter = sk_filter == 0 ? 8 : (sk_filter == 2 ? 0 : sk_filter - 1);
       sk_pick = -1;

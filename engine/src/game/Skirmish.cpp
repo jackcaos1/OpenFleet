@@ -33,11 +33,12 @@ SkirmishSettings::SkirmishSettings() {
   for (int& x : v) x = 0;
   // Konstruktor 0x4bd200: Standardeinheiten 1 (minimal), Tech-Stufe 0; Dilithium / Besatzung stehen im Original auf Werten ausserhalb der Liste (3500 / 4000) und
   // fallen beim Gastgeber auf den ersten Eintrag; Offiziere 100 = erster Eintrag. Die uebrigen Vorgaben folgen den Byte-Feldern +0x4c..+0x57 und den Zahlen
-  // +0x68..+0x84 (Zuordnung zu den Schaltern aus dem Aufbaucode; die Darstellung der Zustaende ist nicht in allen Faellen abgesichert).
+  // +0x68..+0x84 (Zuordnung zu den Schaltern aus dem Aufbaucode). Schalterzustand 0 zeigt den zuerst registrierten Text, Zustand 1 den zweiten (0x525330). Feste Platzierung: Zustand 0
+  // (0x539dbb). "Maximale Spieler" wird mit der Karte gesetzt (Index 8 - Spielerzahl, 0x539e44); Sichtbarkeit: Vorgabe +0x74 = 3.
   v[kOptUnits] = 1;
   v[kOptFerengi] = 1;
-  v[kOptHideMinimap] = 1;
-  v[kOptFixedPlacement] = 1;
+  v[kOptHideMinimap] = 1;  // +0x53 = 1 -> Zustand 1 = zweiter Text (hide_minimap_off, "Minimap Hidden"; Zustand 0 = erster registrierter Text, 0x525330)
+  v[kOptGameType] = -1;  // Vorgabe +0x78 = 2 (ladder) ist nicht in der Liste: das Feld bleibt leer (0x539e01)
   v[kOptVisibility] = 3;
 }
 

@@ -57,8 +57,8 @@ entry 0 and write it to the settings). The meaning of some default numbers (+0x6
 
 ## Map selection screen (0x530b70, section `multiplayer_map_select`)
 Popup with the background `bitmaps/misc/DBmsBG.bmp` (393 x 290); elements relative to it: filter combo 242, 2, 128 x 20 (entries `all_maps`, `maximum_players_8` .. `_2`),
-list rows x 15, width 345, height 14 (row pitch and first row are estimated: 48 + 14 k), scroll bar 376, 48, 14 x 187 with arrows 376, 27 (14 x 21) and 376, 235 (14 x 20),
-buttons `select_map_button` 19, 258 and `cancel_button` 260, 258 (112 x 30, plates `navback` / `navmain`). The placement of the popup on the screen (client: centred) is not read.
+list rows x 15, width 345, height 14, first row y 30, pitch 16, 14 rows (loop 0x53128d: y += 16 while y < 254), scroll bar 376, 48, 14 x 187 with arrows 376, 27 (14 x 21) and 376, 235 (14 x 20),
+buttons `select_map_button` 19, 258 and `cancel_button` 260, 258 (112 x 30, plates `navback` / `navmain`). The popup is a Win32 dialog (resource 2175, window procedure 0x530b70) that is moved to the owner's client origin + (120, 91) with size 393 x 288 (0x530d73), i.e. position (120, 91) in the 640 x 480 game window; it paints the bitmap `DBmsBG.bmp` (400 x 290 blit).
 
 ## Client (build 75)
 Implemented after this specification: all widgets above with the label texts, tapping cycles a combo / toggle (the original opens a drop-down list), the map is chosen
@@ -76,7 +76,14 @@ buttons use `1, 2, 3` in that order). In the alliance column the selected relati
 In "alliances" mode (toggle at y 276, state 1) the team combo of each row is replaced by the three relation buttons (enemy x 261, neutral x 280, friend x 299, 19 x 19);
 the ready lamp (`mpsready.bmp`, 10 x 10) lies at x 326 on the lamp of the row.
 
+## Defaults decoded from the setup code (0x539a00 - 0x539e80)
+Toggle state 0 shows the first registered label, state 1 the second (0x525330). Defaults: lock game 0 (open); alliances / teams 0 (Teams); give units 0; infinite moons 0;
+Ferengi 1; director's cut 0; hide minimap 1 (shows "Minimap Hidden"); fixed placement 0 (shows "Random Placement"). Game type: the default value 2 is not in the list, the
+field stays empty. Maximum players: the field selects entry `8 - n` where n is the map's player count (set when a map is chosen); with the unset default 9 it is empty. Visibility:
+default value 3 (the list of this field is rebuilt depending on setting +0x70, 0x539c3f; not decoded).
+
 ## Open
 - Exact column x of the player row items and the row start (client uses y = 57 + 19 i from the background bitmap).
+- The visibility field (list depends on +0x70).
 - Behaviour of each option on the session (which options the single player instant action honours).
 - The map selection screen (`multiplayer_map_select`) and the chat / message list.

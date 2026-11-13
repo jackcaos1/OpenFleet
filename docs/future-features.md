@@ -18,6 +18,8 @@ each must be an option that can be switched off, and the game must stay playable
 - **Skirmish options:** more AI personalities (mix the original AIPs), handicaps, team games, rally points and waypoints, patrol / guard orders, set-up scenarios (start fleets).
 - **Quality of life:** replay recording (the simulation is meant to be deterministic), pause and speed control, build queue improvements, idle-unit finder, notifications ("freighter idle", "station under attack"), configurable key bindings, accessibility options (text size, colour-blind palettes).
 - **Multiplayer:** LAN and online play for the simulation core (needs determinism work; only after the single-player game is complete).
-- **Modding:** loading additional data folders on top of the original data (already possible with the data source stack), documented ODF extensions, scripting hooks for missions.
+- **Modding:** in theory already possible today: the ZIP data sources can be stacked on top of the original data folder (the first source in the list wins, see the data source dialog), so a mod packaged as a ZIP with the same folder layout as the game (`SOD/`, `Textures/`, `Sprites/`, ODFs inside `assets.zfs` replacements, `bzn/`, ...)
+  should override original files without touching the installation. **This has not been tested yet**; open questions are the override order for files inside `assets.zfs`, case handling, and which formats mods may extend.
+  Further ideas: documented ODF extensions, scripting hooks for missions.
 - **Campaign:** mission scripts are native DLLs in the original; a new, data-driven mission format could allow community campaigns.
 - **Platform:** desktop builds for Linux, Windows, macOS (SDL2); a web build (WebGL2) with local file selection; controller support.

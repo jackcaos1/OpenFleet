@@ -3540,7 +3540,9 @@ void Game::OnFrame(double dt) {
             float sv = 1.0f;
             if (sy.ship && sy.ship->hp.sys[i - 1].max_points > 0) sv = sy.ship->hp.sys_frac(i - 1);
             const float* tc = kMapTeamColors[sy.team >= 0 && sy.team < 9 ? sy.team : 0];
-            const float col[3] = {sv <= 0.0f ? 1.0f : (sv < 1.0f ? 1.0f : tc[0]), sv <= 0.0f ? 0.2f : (sv < 1.0f ? 0.9f : tc[1]), sv <= 0.0f ? 0.2f : (sv < 1.0f ? 0.2f : tc[2])};
+            // Nur nicht gesunde Teile blinken (Wechsel zwischen Schadensfarbe und Teamfarbe, 1 s Periode); gesunde Teile bleiben in der Teamfarbe
+            const bool bad_phase = sv < 1.0f && std::fmod(s.clock, 1.0) < 0.5;
+            const float col[3] = {bad_phase ? 1.0f : tc[0], bad_phase ? (sv <= 0.0f ? 0.2f : 0.9f) : tc[1], bad_phase ? 0.2f : tc[2]};
             HudDraw d;
             float uv[4];
             bool add = false;

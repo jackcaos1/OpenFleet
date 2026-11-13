@@ -14,6 +14,7 @@ enum class UiAction {
   Menu, Move, Attack, Orders, Back, AlertGreen, AlertYellow, AlertRed, Repair, Guard, Patrol, Scout, SearchDestroy,  // Original-Befehle
   Special0, Special1, Special2, Special3, Special4, Special5,                              // Spezialwaffen der Geschwindigkeitsleiste
   Spawn, MapMenu, Stop, Delete, Transport, StandDown, SelfDestruct,
+  Harvest, Recrew, Rally,  // Frachter abbauen (cmd 0x14), Besatzung auffuellen (cmd 7), Sammelpunkt (cmd 0x15)
   Queue0, Queue1, Queue2, Queue3, Queue4, Queue5, BuildMenu, Build0, Build1, Build2, Build3, Build4, Build5, Build6, Build7, Build8, Build9, CancelBuild,  // Bauen (docs/formats/economy.md)
   Focus0, Focus1, Focus2, Focus3, Focus4, Focus5, Focus6, Focus7,  // Tipp auf das Drahtgittermodell im Schiffsfeld: Kamera zum i-ten ausgewaehlten Schiff                                                            // Objekte setzen, Karte waehlen, anhalten, entfernen
 };

@@ -375,6 +375,8 @@ struct Game::Impl {
     float cargo = 0, cargo_max = 0;         // Ladung / maxScrap
     int fr_state = 0;                       // 0 Leerlauf, 1 zum Mond, 2 abbauen, 3 zur Station, 4 entladen
     int fr_moon = -1;                       // Ziel-Mond (Index in moons)
+    bool fr_manual = false;                 // Frachter wurde angehalten / bewegt: kein Abbau, bis "Abbauen" gedrueckt wird (cmd 0x14)
+    bool has_selfdestruct = false;          // ODF-Waffe gselfdes (Befehlsseite zeigt dann "Selbstzerstoerung", 0x4633d1)
     // Ausfahrt aus Werft / Dock (OutputQueueManager, Armada.exe 0x557400): das Schiff entsteht an der Hardpoint-Matrix und wird entlang seiner Front geschoben
     bool exiting = false;
     float exit_p2[3] = {0, 0, 0}, exit_dir[3] = {0, 0, 1}, exit_speed = 0;
@@ -1502,6 +1504,7 @@ struct Game::Impl {
     s->cargo_max = u.max_scrap;
     for (const WeaponSlot& ws : u.weapons) {
       std::string wo = ToLowerAscii(ws.odf);
+      if (wo == "gselfdes") s->has_selfdestruct = true;
       if (wo.size() >= 6 && wo.find("minebm") != std::string::npos) s->freighter = true;
     }
     s->has_energy = u.max_special_energy > 0;
@@ -1751,6 +1754,7 @@ struct Game::Impl {
     if (SelCount() > 0) {
       for (Spawned& s : spawned)
         if (CmdSel(s)) {
+          if (s.freighter && s.dock_phase == 0) { s.fr_manual = true; s.fr_state = 0; }
           StopShip(&s.st);
           s.target_id = 0;
           s.auto_move = 0;
@@ -2540,6 +2544,7 @@ struct Game::Impl {
             const float tg[3] = {o[0] + d[0] * t + rx * off, kTapPlaneY, o[2] + d[2] * t + rz * off};
             if (!CanFly(s)) continue;
             s.auto_move = 0;
+            if (s.freighter && s.dock_phase == 0) { s.fr_manual = true; s.fr_state = 0; }
             SetShipTarget(&s.st, tg);
           }
           GridFx g;
@@ -3116,6 +3121,7 @@ struct Game::Impl {
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
       if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0 || f.exiting) continue;
+      if (f.fr_manual && f.fr_state < 5) continue;  // angehalten oder bewegt: erst "Abbauen" (cmd 0x14) setzt den Abbau fort
       // Armada.exe 0x45a620: naechste eigene Bergbaustation (3D-Abstand vom Frachter, Liste aller Bergbaustationen), ohne weitere Auswahlregel
       int home = -1;
       float bd = 1e30f;
@@ -3965,35 +3971,55 @@ struct Game::Impl {
       c.action = a; c.sprite = spr; c.label = label; c.enabled = enabled; c.active = active;
       return c;
     };
-    // Plaetze nach game_cfg.h (1-basiert -> Index = Platz - 1)
+    // Tastenbelegung nach dem Original (docs/formats/gui-original.md): Craft::InitButtons 0x462ec0 (alle Objekte), Producer 0x45c2a0 / 0x45d7c0 (Werft, Basis, Bauschiff),
+    // Freighter 0x4583b0. Plaetze = BUTTON_LOCATION_* aus game_cfg.h (Platz N = controlButtonN = Index N - 1).
     const bool live = !sp.derelict && sp.team > 0;
-    const bool can_fly = live && CanFly(sp);
-    const bool can_fire = live && !sp.weapons.empty() && sp.hp.sys_ok(kWeapons);
+    const bool movable = sp.movable;
+    const bool armed = !sp.weapons.empty();
+    bool repair_station = false;  // 0x45ebe0: gibt es eine Station des eigenen Teams, die reparieren kann (Werft oder Sternbasis)?
+    for (const Spawned& o : spawned)
+      if (o.team == sp.team && !o.movable && !o.dying && (o.cls == "shipyard" || o.cls == "starbase")) repair_station = true;
+    const bool producer = !sp.build_items.empty();
     if (cmd_page == CmdPage::Main) {
-      st->control[0] = cmd(UiAction::Move, "b_move", "Bewegen", can_fly, move_armed);
-      st->control[1] = cmd(UiAction::Attack, "b_attack", "Angriff", can_fire, attack_armed);
-      st->control[2] = cmd(UiAction::Stop, "b_stop", "Stopp", live && sp.movable);
-      st->control[3] = cmd(UiAction::Repair, "b_repair", "Reparatur", false);
+      st->control[0] = cmd(UiAction::Move, "b_move", "Bewegen", live && movable, move_armed);
+      st->control[1] = cmd(UiAction::Attack, "b_attack", "Angriff", live && armed, attack_armed);
+      st->control[2] = cmd(UiAction::Stop, "b_stop", "Stopp", live && (movable || armed));
+      if (movable) st->control[3] = cmd(UiAction::Repair, "b_repair", "Reparatur", false && repair_station);  // Befehl ohne Wirkung im Client
       st->control[4] = cmd(UiAction::Orders, "b_order", "Befehle", live);
       st->control[5] = cmd(UiAction::StandDown, "b_standdown", "Abwarten", live, sp.alert == 3);
-      st->control[7] = cmd(UiAction::Transport, "b_transport", "Beamen", live && sp.hp.crew_max > 0 && sp.movable, transport_armed);
-      if (!sp.build_items.empty()) st->control[9] = cmd(UiAction::BuildMenu, "b_build", "Bauen", live);
+      if (sp.freighter) st->control[6] = cmd(UiAction::Harvest, "b_harvest", "Abbauen", live);  // Freighter 0x4583b0: BUTTON_LOCATION_HARVEST, cmd 0x14
+      else if (sp.starbase_cls && !movable && sp.hp.crew_max > 0) st->control[6] = cmd(UiAction::Recrew, "b_recrew", "Besatzung", false);  // 0x45c891: Wirkung (cmd 7) nicht gelesen
+      st->control[7] = cmd(UiAction::Transport, "b_transport", "Beamen", live && sp.hp.crew_max > 0 && movable, transport_armed);
+      if (producer) st->control[9] = cmd(UiAction::BuildMenu, "b_build", "Bauen", live);   // cmd 0x13 / 0x18: Bauseite
+      if (producer && !movable) st->control[10] = cmd(UiAction::Rally, "b_rally", "Sammelpunkt", false);  // 0x45c7eb: Werften und Basen; Sammelpunkte fehlen im Client
     } else if (cmd_page == CmdPage::Build) {
-      for (size_t k = 0; k < sp.build_items.size() && k < 10; ++k)
-        st->control[k] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Build0) + static_cast<int>(k)), ("b_" + sp.build_items[k]).c_str(), sp.build_items[k].c_str(), live,
-                             build_armed == sp.build_items[k]);
-      st->control[10] = cmd(UiAction::CancelBuild, "b_cancel", "Abbruch", live && (sp.bq.active || sp.has_site));
+      // 0x45c2a0 Seite 2: Eintrag i auf Platz i + 1; aktiv, wenn die Technik verfuegbar ist, die Warteschlange nicht voll ist (Werften: weniger als 5) und genug Ressourcen da sind
+      const TeamResources& tr = team_res[sp.team >= 0 && sp.team < 9 ? sp.team : 0];
+      for (size_t k = 0; k < sp.build_items.size() && k < 10; ++k) {
+        const BuildCost cost = const_cast<Impl*>(this)->CostOf(sp.build_items[k], sp.team);
+        const bool queue_ok = movable ? !sp.has_site && !sp.bq.active : sp.bq.Size() < BuildQueue::kMax;
+        const bool afford = CanStart(tr, cost) == StartResult::Ok;
+        st->control[k] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Build0) + static_cast<int>(k)), ("b_" + sp.build_items[k]).c_str(), sp.build_items[k].c_str(),
+                             live && queue_ok && afford, build_armed == sp.build_items[k]);
+      }
+      if (sp.bq.active || sp.has_site) st->control[10] = cmd(UiAction::CancelBuild, "b_cancel", "Abbruch", live);   // 0x45c4a7: nur waehrend gebaut wird (cmd 0x1a)
       st->control[11] = cmd(UiAction::Back, "b_back", "Zurueck", true);
     } else {
-      st->control[0] = cmd(UiAction::AlertGreen, "b_galert", "Gruen", live, sp.alert == 0);
-      st->control[1] = cmd(UiAction::AlertYellow, "b_yalert", "Gelb", live, sp.alert == 1);
-      st->control[2] = cmd(UiAction::AlertRed, "b_ralert", "Rot", live, sp.alert == 2);
-      st->control[3] = cmd(UiAction::Patrol, "b_patrol", "Patrouille", false);
-      st->control[4] = cmd(UiAction::Scout, "b_scout", "Erkunden", false);
-      st->control[5] = cmd(UiAction::SearchDestroy, "b_sandd", "Suchen", false);
-      st->control[6] = cmd(UiAction::Guard, "b_guard", "Wache", false);
-      st->control[9] = cmd(UiAction::Delete, "b_decom", "Ausmustern", true);
-      st->control[10] = cmd(UiAction::SelfDestruct, "b_gselfdes", "Selbstzerst.", live);
+      // Befehlsseite (Craft::InitButtons, Seite 1)
+      const bool station_free = !sp.bq.active && !sp.has_site;
+      st->control[9] = cmd(UiAction::Delete, "b_decom", "Ausmustern", live && (producer ? station_free : (repair_station || !movable)));
+      if (movable) {
+        st->control[6] = cmd(UiAction::Guard, "b_guard", "Wache", false);          // Wirkung noch nicht umgesetzt (Anzeige wie im Original: aktiv)
+        st->control[3] = cmd(UiAction::Patrol, "b_patrol", "Patrouille", false);
+        st->control[4] = cmd(UiAction::Scout, "b_scout", "Erkunden", false);
+        st->control[5] = cmd(UiAction::SearchDestroy, "b_sandd", "Suchen", false);
+      }
+      if (movable || armed) {  // Alarmstufen (cmd 0x10 .. 0x12): aktiv nur mit Waffen
+        st->control[0] = cmd(UiAction::AlertGreen, "b_galert", "Gruen", live && armed, sp.alert == 0);
+        st->control[1] = cmd(UiAction::AlertYellow, "b_yalert", "Gelb", live && armed, sp.alert == 1);
+        st->control[2] = cmd(UiAction::AlertRed, "b_ralert", "Rot", live && armed, sp.alert == 2);
+      }
+      if (sp.has_selfdestruct) st->control[10] = cmd(UiAction::SelfDestruct, "b_gselfdes", "Selbstzerst.", live);   // 0x4633d1: nur mit Waffe gselfdes
       st->control[11] = cmd(UiAction::Back, "b_back", "Zurueck", true);
     }
     for (size_t i = 0; i < sp.bq.items.size() && i < 6; ++i) {  // Warteschlange: der erste Eintrag wird gebaut
@@ -4192,6 +4218,12 @@ struct Game::Impl {
         break;
       case UiAction::Back: cmd_page = CmdPage::Main; build_armed.clear(); ghost_set = false; break;
       case UiAction::BuildMenu: cmd_page = CmdPage::Build; break;
+      case UiAction::Harvest:
+        for (Spawned& x : spawned)
+          if (CmdSel(x) && x.freighter) { x.fr_manual = false; if (x.dock_phase == 0) x.fr_state = 0; }
+        Message("Frachter fahren zum Abbau.");
+        break;
+      case UiAction::Recrew: case UiAction::Rally: Message("Noch nicht umgesetzt."); break;
       case UiAction::Build0: case UiAction::Build1: case UiAction::Build2: case UiAction::Build3: case UiAction::Build4:
       case UiAction::Build5: case UiAction::Build6: case UiAction::Build7: case UiAction::Build8: case UiAction::Build9:
         QueueBuild(static_cast<int>(a) - static_cast<int>(UiAction::Build0));

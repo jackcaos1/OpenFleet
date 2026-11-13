@@ -245,15 +245,19 @@ void DrawShips(Builder& b, const GuiCfg& c, const std::vector<HudShip>& ships, f
       if (R("infoSingleWireframeIconArea", a)) b.SpriteBar(sh.wire + "w5", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1.0f, 1, 1, 1);
       return;
     }
-    text("infoSingleClassTextInformationArea", sh.status.empty() ? sh.cls : sh.cls + "  " + sh.status, 1.0f, 1.0f, 1.0f);
+    // Textfarben der Rassen-cfg (gui_rom / gui_kli / gui_bor: infoSingle*TextColor), Vorgabe weiss
+    auto col = [&](const char* key, float o[3]) { o[0] = o[1] = o[2] = 1.0f; c.Numbers(key, 3, o); };
+    float cc[3], cn[3], ck[3], co[3];
+    col("infoSingleClassTextColor", cc); col("infoSingleNameTextColor", cn); col("infoSingleCrewTextColor", ck); col("infoSingleOfficerTextColor", co);
+    text("infoSingleClassTextInformationArea", sh.status.empty() ? sh.cls : sh.cls + "  " + sh.status, cc[0], cc[1], cc[2]);
     if (R("infoSingleNameTextBackgroundArea", a)) b.Sprite("name_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleNameTextInformationArea", sh.name, 1.0f, 1.0f, 1.0f);
+    text("infoSingleNameTextInformationArea", sh.name, cn[0], cn[1], cn[2]);
     if (R("infoSingleCrewTextBackgroundArea", a)) b.Sprite("crew_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleCrewTextLabelArea", "Besatzung", 1, 1, 1, 8);
-    text("infoSingleCrewTextInformationArea", std::to_string(sh.crew) + "/" + std::to_string(sh.crew_max), 1, 1, 1);
+    text("infoSingleCrewTextLabelArea", "Besatzung", ck[0], ck[1], ck[2], 8);
+    text("infoSingleCrewTextInformationArea", std::to_string(sh.crew) + "/" + std::to_string(sh.crew_max), ck[0], ck[1], ck[2]);
     if (R("infoSingleOfficerTextBackgroundArea", a)) b.Sprite("officer_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleOfficerTextLabelArea", "Offiziere", 1, 1, 1, 2);
-    text("infoSingleOfficerTextInformationArea", std::to_string(sh.officers), 1, 1, 1);
+    text("infoSingleOfficerTextLabelArea", "Offiziere", co[0], co[1], co[2], 2);
+    text("infoSingleOfficerTextInformationArea", std::to_string(sh.officers), co[0], co[1], co[2]);
     float r, g, bl;
     if (R("infoSingleCrewDotArea", a)) { StateRgb(sh.crew_state, &r, &g, &bl); b.SpriteBar("crew_dot", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, r, g, bl); }
     if (R("infoSingleShieldBarArea", a)) { StateRgb(sh.shield, &r, &g, &bl); b.SpriteBar("large_shield_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.shield, r, g, bl); }

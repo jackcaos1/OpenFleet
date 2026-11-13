@@ -61,3 +61,8 @@ Things that could not be settled from the executable or the data files. Add a re
 ## Build 104
 - Station destroyed while a freighter is docked / queued: a first report says the freighter flies on; the exact cases are listed for the community in [community-tests.md](community-tests.md) item 1.
 - Dock animation (animation state 0x10) and the `oreglow` beam ring: the ring is shown while a freighter is docked (client), the station animation and the cinematic shot are not implemented; see community-tests.md item 2.
+
+## Build 105 (control panel)
+- Compare the control panel for each object class with docs/formats/gui-original.md: ships, starbase, shipyard, construction ship, freighter, mining station, a ship with the self-destruct weapon. Which buttons appear, which are greyed out, and when?
+- Recrew (location 7) on a starbase and rally point (location 11) on a yard: what do they do exactly (not read yet)?
+- Does a stopped or moved freighter really stop mining until "harvest" is pressed?

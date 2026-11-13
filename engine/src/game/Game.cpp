@@ -38,6 +38,7 @@
 #include "game/Cinematic.h"
 #include "game/Combat.h"
 #include "game/Economy.h"
+#include "game/Ai.h"
 #include "game/Shockwave.h"
 #include "game/Skirmish.h"
 #include "formats/LabelMap.h"
@@ -2880,11 +2881,12 @@ struct Game::Impl {
     const bool ok = odf_lib && LoadUnitDef(*odf_lib, ev.item.odf, &u);
     const std::string what = ok && !u.unit_name.empty() ? u.unit_name : ev.item.odf;
     const int team = spawned[i].team;
+    const bool quiet = team != human_team;  // Meldungen der Computerspieler nicht anzeigen
     switch (ev.event) {
-      case BuildQueue::Event::Started: Message(who + ": baut " + what + " (" + std::to_string(static_cast<int>(ev.item.cost.time + 0.5f)) + " s)."); break;
-      case BuildQueue::Event::Cancelled: Message(who + ": Bau abgebrochen, Kosten erstattet."); break;
+      case BuildQueue::Event::Started: if (!quiet) Message(who + ": baut " + what + " (" + std::to_string(static_cast<int>(ev.item.cost.time + 0.5f)) + " s)."); break;
+      case BuildQueue::Event::Cancelled: if (!quiet) Message(who + ": Bau abgebrochen, Kosten erstattet."); break;
       case BuildQueue::Event::Failed:
-        Message(std::string(StartFailText(ev.why)) + " (" + what + ")");
+        if (!quiet) Message(std::string(StartFailText(ev.why)) + " (" + what + ")");
         if (spawned[i].has_site) spawned[i].has_site = false;
         break;
       case BuildQueue::Event::Completed: {
@@ -2893,7 +2895,11 @@ struct Game::Impl {
           r.officers_max += u.officer_gain;
           r.officers += u.officer_gain;
           r.AddOfficers(-ev.item.cost.officers);
-          Message(what + " fertig: Offiziere +" + std::to_string(u.officer_gain));
+          if (!quiet) Message(what + " fertig: Offiziere +" + std::to_string(u.officer_gain));
+          break;
+        }
+        if (ok && u.class_label == "pod") {  // Forschung (ResearchPod): die Spezialwaffe selbst ist noch nicht umgesetzt
+          if (!quiet) Message(what + ": Forschung fertig (ohne Wirkung).");
           break;
         }
         float pos[3];
@@ -2908,7 +2914,7 @@ struct Game::Impl {
         if (spawned.size() > before) {
           Spawned& ns = spawned.back();
           if (ns.starbase_cls && ns.officer_gain > 0) { r.officers_max += ns.officer_gain; r.officers += ns.officer_gain; }  // 0x45f530
-          Message(what + " fertig.");
+          if (!quiet) Message(what + " fertig.");
         }
         break;
       }
@@ -3017,6 +3023,247 @@ struct Game::Impl {
     }
   }
 
+  // ---- Computerspieler (docs/formats/ai.md) ----
+  struct AiTeam {
+    int team = 0;
+    Aip aip;
+    std::vector<AipElement> list;
+    std::vector<int> targets;
+    BuildPlanner planner;
+    double build_timer = 0, strat_timer = 0, stall = 0;
+  };
+  std::vector<AiTeam> ai_teams;
+
+  bool LoadAipText(const std::string& name, Aip* out) {
+    std::vector<uint8_t> b;
+    if (!source || !source->ReadFile("AI/AIPs/" + name, &b)) return false;
+    return ParseAip(std::string(b.begin(), b.end()), out);
+  }
+
+  void InitAi() {
+    ai_teams.clear();
+    const int n = SkSlots();
+    for (int i = 0; i < n; ++i) {
+      const SkSlot& sl = sk_slot[i];
+      if (sl.kind != 2 || sl.team < 1 || sl.team > 8) continue;
+      bool dup = false;
+      for (const AiTeam& t : ai_teams) dup = dup || t.team == sl.team;
+      if (dup) continue;
+      // Rasse: erstes Objekt des Teams (Kartenobjekte), sonst die Rasse des Platzes
+      char letter = 0;
+      for (const Spawned& o : spawned)
+        if (o.team == sl.team && !o.odf.empty()) { letter = static_cast<char>(std::tolower(static_cast<unsigned char>(o.odf[0]))); break; }
+      if (letter != 'f' && letter != 'k' && letter != 'r' && letter != 'b') {
+        static const char kLetter[4] = {'f', 'b', 'r', 'k'};
+        letter = kLetter[std::min(3, std::max(0, sl.race))];
+      }
+      const char* race = letter == 'f' ? "federation" : letter == 'k' ? "klingon" : letter == 'r' ? "romulan" : "borg";
+      AiTeam a;
+      a.team = sl.team;
+      // ANNAHME: Schwierigkeit "medium" (einzige Computerart des Clients) liefert die Strategiewerte, die Bauliste kommt aus <rasse>_build_list.aip
+      LoadAipText("medium.aip", &a.aip);
+      Aip bl;
+      if (LoadAipText(std::string(race) + "_build_list.aip", &bl)) MergeAip(&a.aip, bl);
+      a.list = a.aip.build_list;
+      a.targets = CumulativeTargets(a.list);
+      a.planner.Reset(a.list);
+      a.build_timer = 1.0 + 0.5 * i;
+      a.strat_timer = 10.0 + i;
+      ai_teams.push_back(a);
+      FLEET_LOGI("KI Team %d (%s): %zu Bauschritte", sl.team, race, a.list.size());
+    }
+  }
+
+  int CountOwned(int team, const std::string& odf, bool include_queued) const {
+    int n = 0;
+    for (const Spawned& o : spawned) {
+      if (o.team != team || o.dying || !o.hp.alive()) continue;
+      if (ToLowerAscii(o.odf) == odf) ++n;
+      if (include_queued) {
+        for (const QueueItem& q : o.bq.items) if (q.odf == odf) ++n;
+        if (o.has_site && o.site_odf == odf && o.bq.items.empty()) ++n;
+      }
+    }
+    return n;
+  }
+
+  // Bauplatz fuer das naechste Gebaeude (ANNAHME: Mining -> Mond Nr. base, Turm -> Bergbaustation Nr. base, sonst um die erste Sternbasis)
+  bool AiPickSite(const AiTeam& a, const Spawned& rig, const AipElement& e, float out[3]) {
+    const Spawned* home = nullptr;
+    for (const Spawned& o : spawned)
+      if (o.team == a.team && o.starbase_cls && !o.dying && o.hp.alive()) { home = &o; break; }
+    float hp[3] = {rig.st.pos[0], 0, rig.st.pos[2]};
+    if (home) { hp[0] = home->st.pos[0]; hp[2] = home->st.pos[2]; }
+    float c[3] = {hp[0], 0, hp[2]};
+    const bool mining = e.unit.find("mining") != std::string::npos, turret = e.unit.find("turret") != std::string::npos;
+    if (mining) {
+      std::vector<int> order;
+      for (size_t k = 0; k < moons.size(); ++k) order.push_back(static_cast<int>(k));
+      std::sort(order.begin(), order.end(), [&](int x, int y) { return Dist3(moons[static_cast<size_t>(x)].pos, hp) < Dist3(moons[static_cast<size_t>(y)].pos, hp); });
+      if (order.empty()) return false;
+      const int idx = std::min(static_cast<int>(order.size()) - 1, std::max(0, e.base - 1));
+      const Moon& m = moons[static_cast<size_t>(order[static_cast<size_t>(idx)])];
+      float dx = hp[0] - m.pos[0], dz = hp[2] - m.pos[2];
+      const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+      c[0] = m.pos[0] + dx / dl * (m.radius + 260.0f);
+      c[2] = m.pos[2] + dz / dl * (m.radius + 260.0f);
+    } else if (turret && e.base > 0) {
+      int seen = 0;
+      for (const Spawned& o : spawned)
+        if (o.team == a.team && o.mining_stn && !o.dying && ++seen == e.base) { c[0] = o.st.pos[0]; c[2] = o.st.pos[2]; break; }
+    }
+    float x = c[0], z = -c[2];
+    SkSpiralPlace(x, z,
+                  [&](float px, float pz) {
+                    if (path_grid.Blocked(px, pz)) return false;
+                    const float q[3] = {px, 0.0f, -pz};
+                    for (const Spawned& o : spawned) {
+                      if (Dist3(o.st.pos, q) < RadiusOf(o) + 160.0f) return false;
+                      if (o.has_site && Dist3(o.site, q) < 360.0f) return false;
+                    }
+                    for (const Moon& m : moons) if (Dist3(m.pos, q) < m.radius + 140.0f) return false;
+                    return true;
+                  },
+                  &x, &z);
+    out[0] = x; out[1] = 0.0f; out[2] = -z;
+    return true;
+  }
+
+  void AiBuildStep(AiTeam& a) {
+    if (!odf_lib) return;
+    AipElement e;
+    UnitDef u;
+    while (a.planner.Peek(&e)) {
+      if (!LoadUnitDef(*odf_lib, e.unit, &u)) { a.planner.Skip(); continue; }
+      if (CountOwned(a.team, e.unit, true) >= a.targets[a.planner.Index()]) { a.planner.Skip(); a.stall = 0; continue; }
+      break;
+    }
+    if (!a.planner.Peek(&e)) return;
+    // Hersteller suchen
+    int prod = -1;
+    bool rig = false;
+    for (size_t i = 0; i < spawned.size() && prod < 0; ++i) {
+      Spawned& o = spawned[i];
+      if (o.team != a.team || o.derelict || o.dying || !o.hp.alive()) continue;
+      if (std::find(o.build_items.begin(), o.build_items.end(), e.unit) == o.build_items.end()) continue;
+      if (o.movable) {
+        if (o.has_site || !o.bq.items.empty() || !CanFly(o)) continue;
+        rig = true;
+      } else if (o.bq.Size() >= 2) continue;
+      prod = static_cast<int>(i);
+    }
+    if (prod < 0) {
+      a.stall += 2.0;
+      if (a.stall > 90.0) { a.planner.Skip(); a.stall = 0; }  // nichts kann das bauen (z. B. fehlende Forschung): naechster Schritt
+      return;
+    }
+    a.stall = 0;
+    Spawned& p = spawned[static_cast<size_t>(prod)];
+    const BuildCost cost = CostOf(e.unit, a.team);
+    if (CanStart(Res(a.team), cost) != StartResult::Ok) return;  // warten, bis es reicht
+    if (rig) {
+      float site[3];
+      if (!AiPickSite(a, p, e, site)) { a.planner.Skip(); return; }
+      p.site_odf = e.unit;
+      for (int k = 0; k < 3; ++k) p.site[k] = site[k];
+      p.has_site = true;
+      p.auto_move = 0;
+      SetShipTarget(&p.st, p.site);
+    } else {
+      QueueItem it;
+      it.odf = e.unit;
+      it.cost = cost;
+      p.bq.Enqueue(it);
+    }
+  }
+
+  // Strategische Ziele nach Scheduler_README.txt (Raster 400, Schritte 1 bis 8); Bedrohung = Zahl bewaffneter Feinde je Zelle (ANNAHME)
+  void AiStrategyStep(AiTeam& a) {
+    std::vector<SquadUnit> units;
+    for (const Spawned& o : spawned)
+      if (o.team == a.team && !o.derelict && !o.dying && o.hp.alive() && o.movable && !o.weapons.empty() && !o.freighter && o.build_items.empty() && CanFly(o)) {
+        SquadUnit su;
+        su.id = static_cast<int>(o.id);
+        su.x = o.st.pos[0];
+        su.z = -o.st.pos[2];
+        su.shield = o.hp.shield_max;
+        units.push_back(su);
+      }
+    if (units.empty()) return;
+    struct Acc { GoalCell c; float ex = 0, ez = 0, ox = 0, oz = 0; int en = 0, on = 0; std::vector<unsigned> enemy_ids; };
+    std::map<std::pair<int, int>, Acc> cells;
+    float home[2] = {units[0].x, units[0].z};
+    bool have_home = false;
+    for (const Spawned& o : spawned) {
+      if (o.team <= 0 || o.dying || !o.hp.alive() || o.derelict) continue;
+      const bool own = o.team == a.team, enemy = IsEnemyTeam(a.team, o.team);
+      if (!own && !enemy) continue;
+      const float x = o.st.pos[0], z = -o.st.pos[2];
+      Acc& c = cells[{static_cast<int>(std::floor(x / 400.0f)), static_cast<int>(std::floor(z / 400.0f))}];
+      const bool station = !o.movable;
+      if (own) {
+        if (station) { c.c.own_stations++; c.ox += x; c.oz += z; ++c.on; if (!have_home && o.starbase_cls) { home[0] = x; home[1] = z; have_home = true; } }
+      } else {
+        if (station) c.c.enemy_stations++;
+        else if (!o.weapons.empty()) c.c.threat += 1.0f;
+        c.c.enemy_shield += o.hp.shield_max;
+        c.ex += x; c.ez += z; ++c.en;
+        c.enemy_ids.push_back(o.id);
+      }
+    }
+    std::vector<std::pair<float, float>> enemy_stn;
+    for (const auto& kv : cells) if (kv.second.c.enemy_stations > 0 && kv.second.en > 0) enemy_stn.push_back({kv.second.ex / kv.second.en, kv.second.ez / kv.second.en});
+    std::vector<Goal> goals;
+    std::vector<const Acc*> goal_acc;
+    for (auto& kv : cells) {
+      Acc& c = kv.second;
+      GoalCell gc = c.c;
+      const float hx = home[0], hz = home[1];
+      if (c.en > 0) { gc.x = c.ex / c.en; gc.z = c.ez / c.en; } else if (c.on > 0) { gc.x = c.ox / c.on; gc.z = c.oz / c.on; } else continue;
+      gc.dist_home = std::sqrt((gc.x - hx) * (gc.x - hx) + (gc.z - hz) * (gc.z - hz)) / 400.0f;
+      gc.dist_enemy = 0;
+      if (c.c.enemy_stations == 0) {
+        float best = 1e30f;
+        for (const auto& es : enemy_stn) best = std::min(best, std::sqrt((gc.x - es.first) * (gc.x - es.first) + (gc.z - es.second) * (gc.z - es.second)));
+        gc.dist_enemy = enemy_stn.empty() ? 0.0f : best / 400.0f;
+      }
+      for (GoalKind k : {GoalKind::AttackBase, GoalKind::Attack, GoalKind::Defend}) {
+        Goal g = EvaluateGoal(k, gc, a.aip);
+        if (!g.valid || c.en == 0) continue;  // ohne Feind in der Zelle gibt es nichts anzugreifen
+        goals.push_back(g);
+        goal_acc.push_back(&c);
+      }
+    }
+    if (goals.empty()) return;
+    const std::vector<std::vector<int>> asg = AssignGoals(goals, units, a.aip);
+    for (size_t gi = 0; gi < asg.size(); ++gi)
+      for (int uid : asg[gi]) {
+        const int ui = FindById(static_cast<unsigned>(uid));
+        if (ui < 0) continue;
+        Spawned& u = spawned[static_cast<size_t>(ui)];
+        int best = -1;
+        float bd = 1e30f;
+        for (unsigned eid : goal_acc[gi]->enemy_ids) {
+          const int ei = FindById(eid);
+          if (ei < 0) continue;
+          const float d = Dist3(u.st.pos, spawned[static_cast<size_t>(ei)].st.pos);
+          const bool armed = !spawned[static_cast<size_t>(ei)].weapons.empty() && spawned[static_cast<size_t>(ei)].movable;
+          const float score = d - (goals[gi].kind == GoalKind::AttackBase ? 0.0f : (armed ? 500.0f : 0.0f));  // Angriff: Schiffe vor Stationen
+          if (score < bd) { bd = score; best = ei; }
+        }
+        if (best >= 0 && u.target_id != spawned[static_cast<size_t>(best)].id) { u.target_id = spawned[static_cast<size_t>(best)].id; u.alert = 2; }
+      }
+  }
+
+  void StepAi(float dt) {
+    for (AiTeam& a : ai_teams) {
+      a.build_timer -= dt;
+      a.strat_timer -= dt;
+      if (a.build_timer <= 0) { a.build_timer = 2.0; AiBuildStep(a); }
+      if (a.strat_timer <= 0) { a.strat_timer = 6.0; AiStrategyStep(a); }
+    }
+  }
+
   void QueueBuild(int item) {
     if (selected < 0 || selected >= static_cast<int>(spawned.size())) return;
     Spawned& sp = spawned[static_cast<size_t>(selected)];
@@ -3104,6 +3351,7 @@ struct Game::Impl {
     }
     InitResources();
     SkCreateStartUnits(has_objects);
+    InitAi();
     auto camera = [&](int player, float out[3]) {
       for (const BznPath& p : map.paths) {
         if (ToLowerAscii(p.name) != "camera_" + std::to_string(player) || p.points.size() < 3) continue;
@@ -3726,6 +3974,7 @@ void Game::OnFrame(double dt) {
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
+    s.StepAi(static_cast<float>(std::min(dt, 0.1)));
     s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
     s.StepFreighters(static_cast<float>(std::min(dt, 0.1)));
     struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
@@ -4217,5 +4466,40 @@ void Game::OnScroll(float amount) {
 }
 
 int Game::frames_rendered() const { return impl_->frames; }
+
+bool Game::DebugStartSkirmish(const std::string& map, bool ai_vs_ai) {
+  Impl& s = *impl_;
+  s.SkEnter();
+  s.sk_sel = -1;
+  for (size_t i = 0; i < s.sk_maps.size(); ++i)
+    if (ToLowerAscii(s.sk_maps[i]) == ToLowerAscii(map)) s.sk_sel = static_cast<int>(i);
+  if (s.sk_sel < 0) return false;
+  s.SkLoadMapInfo();
+  s.SkMaxPlayersFromMap();
+  if (ai_vs_ai) s.sk_slot[0].kind = 2;
+  s.SkStart();
+  return s.in_game;
+}
+
+std::string Game::DebugReport() const {
+  const Impl& s = *impl_;
+  std::string out;
+  char buf[200];
+  for (int t = 1; t < 9; ++t) {
+    int ships = 0, stations = 0, freighters = 0, armed = 0;
+    for (const Impl::Spawned& o : s.spawned) {
+      if (o.team != t || o.dying || !o.hp.alive()) continue;
+      if (!o.movable) ++stations;
+      else if (o.freighter) ++freighters;
+      else if (!o.weapons.empty()) ++armed;
+      else ++ships;
+    }
+    if (ships + stations + freighters + armed == 0) continue;
+    const TeamResources& r = s.team_res[t];
+    std::snprintf(buf, sizeof buf, "team %d: dil %.0f crew %.0f off %d | stations %d freighters %d warships %d other %d\n", t, r.dilithium, r.crew, r.officers, stations, freighters, armed, ships);
+    out += buf;
+  }
+  return out;
+}
 
 }  // namespace fleet

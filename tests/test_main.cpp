@@ -32,6 +32,7 @@
 #include "game/PathGrid.h"
 #include "game/Skirmish.h"
 #include "game/Economy.h"
+#include "game/Ai.h"
 #include "formats/LabelMap.h"
 #include "io/ZipSource.h"
 #include "io/Inflate.h"
@@ -1755,6 +1756,76 @@ static void TestEconomy() {
   CHECK(std::fabs(m.crew - 8.75f) < 1e-4f);
 }
 
+static void TestAi() {
+  using namespace fleet;
+  Aip a;
+  const std::string txt =
+      "#include \"aipdef.h\"\nint attack_troops_priority = 100; // note\ndouble distance_from_goal_match_modifier = -0.5;\n"
+      "int perimeter_priority = 800;\nint defend_priority = 1000;\nint attack_enemy_base_priority = 30;\n"
+      "Better_Build_List_Element the_build_list[MAX_ELEMENTS] = \n{\n\t\"kbase\",\t1,0,\t// first base\n\t\"kmining\",\t1,2,\n\t\"kfreight\", 2,0,\n};\n";
+  CHECK(ParseAip(txt, &a));
+  CHECK(a.Get("attack_troops_priority", 0) == 100);
+  CHECK(a.Get("distance_from_goal_match_modifier", 0) == -0.5);
+  CHECK(a.build_list.size() == 3 && a.build_list[0].unit == "kbase" && a.build_list[1].base == 2 && a.build_list[2].count == 2);
+  Aip plain;
+  CHECK(ParseAip("Build_List_Element the_build_list[MAX_ELEMENTS] = \n{\n\t\"zjemyard\", 1,\n\t\"zjemdest\",3\n};\n", &plain));
+  CHECK(plain.build_list.size() == 2 && plain.build_list[1].count == 3 && plain.build_list[1].base == 0);
+  Aip over;
+  over.params["attack_troops_priority"] = 7;
+  MergeAip(&a, over);
+  CHECK(a.Get("attack_troops_priority", 0) == 7 && a.build_list.size() == 3);
+
+  BuildPlanner bp;
+  bp.Reset(a.build_list);
+  AipElement e;
+  CHECK(bp.Peek(&e) && e.unit == "kbase");
+  bp.Advance();
+  CHECK(bp.Peek(&e) && e.unit == "kmining");
+  bp.Skip();
+  CHECK(bp.Peek(&e) && e.unit == "kfreight");
+  bp.Advance();
+  CHECK(bp.Peek(&e) && e.unit == "kfreight");  // second unit of the element
+  bp.Advance();
+  CHECK(bp.Done());
+
+  {
+    const std::vector<int> ct = CumulativeTargets({{"fbase", 1, 0}, {"fscout", 2, 0}, {"fbase", 1, 1}, {"fscout", 1, 0}});
+    CHECK(ct.size() == 4 && ct[0] == 1 && ct[1] == 2 && ct[2] == 2 && ct[3] == 3);
+  }
+  // goals (Scheduler_README.txt step 3)
+  Aip p;
+  p.params["attack_troops_priority"] = 1000;
+  p.params["attack_enemy_base_priority"] = 1500;
+  p.params["defend_priority"] = 100;
+  p.params["distance_from_enemy_priority_modifier"] = 10;
+  p.params["perimeter_priority"] = 10;
+  p.params["distance_from_goal_match_modifier"] = -0.5;
+  GoalCell c;
+  c.enemy_stations = 2; c.threat = 1.0f; c.dist_enemy = 5; c.perimeter = true; c.x = 1000; c.z = 0; c.enemy_shield = 500;
+  Goal g = EvaluateGoal(GoalKind::AttackBase, c, p);
+  CHECK(g.valid && std::fabs(g.raw - (5 * 10 + 1.0 * 1000 + 10 + 2 * 1500)) < 1e-6);
+  CHECK(!EvaluateGoal(GoalKind::Attack, c, p).valid);   // enemy stations -> invalid for plain attack
+  c.enemy_stations = 0;
+  CHECK(EvaluateGoal(GoalKind::Attack, c, p).valid && !EvaluateGoal(GoalKind::AttackBase, c, p).valid && !EvaluateGoal(GoalKind::Defend, c, p).valid);
+  c.own_stations = 3;
+  CHECK(std::fabs(EvaluateGoal(GoalKind::Defend, c, p).raw - (50 + 1000 + 10 + 300)) < 1e-6);
+  CHECK(std::fabs(MatchUtility(g, 0, 0, p) - (g.raw - 500.0)) < 1e-6);
+
+  // assignment: not enough strength -> rolled back; enough -> nearest units first
+  GoalCell t;
+  t.enemy_stations = 1; t.x = 2000; t.z = 0; t.enemy_shield = 1000;
+  std::vector<Goal> goals = {EvaluateGoal(GoalKind::AttackBase, t, p)};
+  std::vector<SquadUnit> units = {{1, 100, 0, 400}, {2, 1900, 0, 400}, {3, 1500, 0, 400}};
+  auto r = AssignGoals(goals, units, p);
+  CHECK(r.size() == 1 && r[0].size() == 3);  // 1200 > 1000 only with all three
+  units[2].shield = 100;                      // 900 in total: not enough
+  r = AssignGoals(goals, units, p);
+  CHECK(r[0].empty());
+  goals[0].cell.enemy_shield = 450;
+  r = AssignGoals(goals, units, p);
+  CHECK(r[0].size() == 2 && r[0][0] == 2 && r[0][1] == 3);  // nearest first, stops when strength is exceeded
+}
+
 static void TestSkirmish() {
   using namespace fleet;
   LabelMap lm;
@@ -1901,6 +1972,7 @@ int main() {
   TestPathGrid();
   TestSkirmish();
   TestEconomy();
+  TestAi();
   TestMenuLayout();
   TestSaveGame();
   TestMapScene();

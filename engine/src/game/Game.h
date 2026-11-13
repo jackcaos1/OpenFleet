@@ -75,6 +75,9 @@ class Game {
   void ToggleMute();
   // Gitter in der Ebene y = 0 ein-/ausschalten (Original: Taste G).
   void ToggleGrid();
+  // Entwicklungshilfe (Desktop, ohne Eingabe): Skirmish auf der Karte starten (Platz 1 als Computer, wenn ai_vs_ai) und den Zustand als Text ausgeben.
+  bool DebugStartSkirmish(const std::string& map, bool ai_vs_ai);
+  std::string DebugReport() const;
 
 
   // Spielstand im Originalformat (nicht im Mehrspieler). SaveState: false, wenn gerade nichts zu speichern ist (Menue).

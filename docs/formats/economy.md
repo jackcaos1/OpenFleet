@@ -97,3 +97,23 @@ supply, ODF `maxHealth` 20000); the moon's user := the freighter (0x453580); whe
 **Client (Game.cpp StepFreighters)** now follows these rules for the decisions: nearest station and nearest moon measured from the freighter, one miner per moon with the 30 unit hold, full / idle thresholds (0.01 and 5), per-hit amount.
 Still invented: the approach / hold positions (surface distance 100), the docking distance, and the whole undocking: how a docked freighter leaves (order 8 handler 0x42af80, `MiningInputQueue`, the station's `OutputQueueManager` and the spline path out of the dock) is **not read yet**; the client just continues from the dock point.
 Also not read: 0x435010's filter (which objects count as moons), the random wait after a moon is exhausted, what happens when the station is destroyed while docked.
+
+## Docking and leaving (read 13.11.2026, second pass)
+**Order 8 / queue phases.** Every craft in a queue manager has a phase in `+0x67c`: 0 = just added (the manager logs and removes it if it is still 0 in the Output queue), 1 = being moved, 2 = finished.
+`NewOrder` case 8 sets the phase to 1.
+
+**Leaving (OutputQueueManager::Update, 0x557400, ported):**
+- The new craft (yard ship, freighter from a mining station) is created at the world matrix of the producer's hardpoint (yard: ODF `buildHardpoint`, default `hp01`; mining station: dock hardpoint; both SOD nodes exist as `build` / `dock`).
+- Phase 1: every frame the craft is moved along its own front axis by `dockingSpeedFactor` (physics ODF, a multiple of the impulse speed; 2.5 for `cnstphys`) x impulse speed x dt (0x465b50), until
+  `dot(P2 - pos, front) <= 0` with `P2 = hardpoint + front * 1.1 * (station radius + craft radius)` (constant 0x5caa50 = 1.1).
+- Phase 2: orders are issued. Freighter (class flag 0x80) leaving a mining station: order 24 (mine) with its stored moon (+0x79c), else with the station, else without target. Craft leaving a shipyard: order 39 (move to the rally point +0x7d8 when set), otherwise order 2 (idle).
+- Client: `BeginExit` / `StepExits` implement phases 1 and 2 for new yard ships and for the free freighter. Rally points do not exist in the client yet, so yard ships stop at the exit point.
+
+**Docking (MiningQueueManager::Update, 0x558240, 544 lines, NOT ported):**
+- The freighter's mining routine flies to the point returned by the queue manager's slot 0 (0x556d30: a slot point built from the manager's vectors at +0x24 / +0x30, the constant 40.0 at 0x5d3398 and the station position) and enters the queue (slot 4, 0x556b40) when closer than the class value +0x208 = **tooCloseToTurn** of its physics ODF (50 for `cnstphys`).
+  The client now uses that value for the dock test.
+- Inside the queue the craft follows a **spline** (a 0x34-byte path object at craft +0x684, built by queue manager slot 9 = 0x556ff0): each frame the parameter advances by `min(dt * class[+0x1f8] / length, dockingSpeedFactor * maxForwardSpeed * dt / length)`, the position is evaluated from the cubic coefficients (0x558990, 0x558a30, 0x558930, 0x4502b0, 0x450210) and set with 0x556650; at the end of the spline the phase counts up (orientation set through the craft's virtual +0x14).
+  Waiting crafts keep a spacing of 40 units (+ index) behind the one in front (phase 2 branch).
+- Not read: the spline construction (0x556ff0, 0x556ed0, 0x556fa0), the unloading trigger (MiningStation::Receive 0x45a910 is not called directly from the queue update), and the way out after unloading (presumably the same Output queue as above, order 24 afterwards).
+- Not read either: the filter of 0x435010 (which objects count as moons), what happens to docked freighters when their station is destroyed.
+- `process +0x114` set when a moon is exhausted is a random angle (0x5018c0 x pi x 0.5), not a waiting time (corrects the earlier note).

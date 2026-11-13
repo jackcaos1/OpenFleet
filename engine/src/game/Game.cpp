@@ -356,6 +356,8 @@ struct Game::Impl {
     BuildQueue bq;                          // Warteschlange: Werft, Basis (Schiffe) und Bauschiff (ein Eintrag am Bauplatz)
     std::vector<std::string> build_items;   // buildItem0..9
     int officer_gain = 0;                   // officerGain (Sternbasis / Upgrade)
+    bool exit_freighter = false;
+    float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
     bool has_site = false;                  // Bauschiff: Baustelle gewaehlt
@@ -367,6 +369,9 @@ struct Game::Impl {
     float cargo = 0, cargo_max = 0;         // Ladung / maxScrap
     int fr_state = 0;                       // 0 Leerlauf, 1 zum Mond, 2 abbauen, 3 zur Station, 4 entladen
     int fr_moon = -1;                       // Ziel-Mond (Index in moons)
+    // Ausfahrt aus Werft / Dock (OutputQueueManager, Armada.exe 0x557400): das Schiff entsteht an der Hardpoint-Matrix und wird entlang seiner Front geschoben
+    bool exiting = false;
+    float exit_p2[3] = {0, 0, 0}, exit_dir[3] = {0, 0, 1}, exit_speed = 0;
     float fr_timer = 0;
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
@@ -1583,6 +1588,7 @@ struct Game::Impl {
     if (!u.physics_file.empty() && LoadPhysicsDef(*odf_lib, u.physics_file, &pd)) {
       s->fp = FlightFromPhysics(pd);
       s->hodf_ok = LoadHoverOdf(*odf_lib, u.physics_file, &s->hodf);
+      if (const OdfObject* po = odf_lib->Get(u.physics_file)) po->GetFloat("dockingSpeedFactor", &s->dock_factor);
       // Nur Schiffe bewegen sich: Stationen, Plattformen und Kartenobjekte haben teils ebenfalls eine physics-Datei.
       static const char* const kFixed[] = {"starbase", "shipyard", "pod", "planet_obj", "background_obj", "nebula_obj", "wormhole_obj", "cannon", "areacannon",
                                            "sensor", "launcher", "areamissile", "detectcloak", "toggleweapon", "upgrade", "scrap", "fireballexplode", "shockwavexplode"};
@@ -2263,6 +2269,7 @@ struct Game::Impl {
     std::vector<HoverObstacle> obs;
     for (Spawned& s : spawned) {
       if (!s.movable) continue;
+      if (s.exiting) continue;  // wird gerade aus Werft / Dock geschoben (StepExits)
       const bool can_fly = CanFly(s);
       if (!can_fly) StopShip(&s.st);  // Antrieb ausgefallen oder Wrack: kein Kurs, nur Ausrollen
       if (s.hodf_ok) {
@@ -2998,14 +3005,24 @@ struct Game::Impl {
           break;
         }
         float pos[3];
+        float hp_dir[3] = {0, 0, 0};
+        bool from_hp = false;
         if (spawned[i].has_site) {
           for (int k = 0; k < 3; ++k) pos[k] = spawned[i].site[k];
           spawned[i].has_site = false;
         } else {
-          FreeSpotNear(spawned[i], pos);
+          // Armada.exe 0x45b050: der Hardpoint kommt aus der ODF (buildHardpoint), Vorgabe "hp01"; das Schiff entsteht an seiner Matrix
+          std::string hpn = "hp01";
+          if (const OdfObject* yo = odf_lib ? odf_lib->Get(spawned[i].odf_l.empty() ? ToLowerAscii(spawned[i].odf) : spawned[i].odf_l) : nullptr) {
+            std::string v;
+            if (yo->GetString("buildHardpoint", &v) && !v.empty()) hpn = ToLowerAscii(v);
+          }
+          from_hp = HardpointWorld(spawned[i], hpn, pos, hp_dir);
+          if (!from_hp) FreeSpotNear(spawned[i], pos);
         }
         const size_t before = spawned.size();
         SpawnAt(ev.item.odf, team, pos, false, false);
+        if (spawned.size() > before && from_hp) BeginExit(spawned.size() - 1, spawned[i], pos, hp_dir, false);
         if (spawned.size() > before) {
           Spawned& ns = spawned.back();
           if (ns.starbase_cls && ns.officer_gain > 0) { r.officers_max += ns.officer_gain; r.officers += ns.officer_gain; }  // 0x45f530
@@ -3027,7 +3044,11 @@ struct Game::Impl {
               ShipMatrices(spawned[si].st, spawned[si].scale, &dm, &dr);
               float wp[3];
               Xf(dm, dock, wp);
-              if (SpawnAt(fr, team, wp, false, false)) {
+              float dock_dir[3] = {0, 0, 1};
+              float dock_pos[3];
+              const bool have_dock = HardpointWorld(spawned[si], "dock", dock_pos, dock_dir);
+              if (SpawnAt(fr, team, have_dock ? dock_pos : wp, false, false)) {
+                if (have_dock) BeginExit(spawned.size() - 1, spawned[si], dock_pos, dock_dir, true);
                 spawned[si].hp.crew = std::max(0.0f, spawned[si].hp.crew - spawned.back().hp.crew);
                 if (!quiet) Message("Dilithium-Frachter wird mit der Station geliefert.");
               }
@@ -3068,7 +3089,7 @@ struct Game::Impl {
   void StepFreighters(float dt) {
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
-      if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0) continue;
+      if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0 || f.exiting) continue;
       // Armada.exe 0x45a620: naechste eigene Bergbaustation (3D-Abstand vom Frachter, Liste aller Bergbaustationen), ohne weitere Auswahlregel
       int home = -1;
       float bd = 1e30f;
@@ -3115,7 +3136,7 @@ struct Game::Impl {
         float dx = f.st.pos[0] - st.st.pos[0], dz = f.st.pos[2] - st.st.pos[2];
         const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
         const float stand = srad + std::max(70.0f, st.dock_buffer);  // dockingBuffer
-        if (dl <= stand + 40.0f) { f.fr_state = 4; continue; }
+        if (dl <= stand + (f.hodf_ok ? f.hodf.tooCloseToTurn : 40.0f)) { f.fr_state = 4; continue; }  // Klassenwert +0x208 = tooCloseToTurn der Physik-ODF (0x42b7f0)
         const float tg[3] = {st.st.pos[0] + dx / dl * stand, 0.0f, st.st.pos[2] + dz / dl * stand};
         go(tg);
         continue;
@@ -3519,6 +3540,56 @@ struct Game::Impl {
     if (!ResolveMapObject(bo, &info) || info.sod.empty()) return std::string();
     if (scale) *scale = info.scale > 0 ? info.scale : 1.0f;
     return info.sod;
+  }
+
+  // Weltposition und Frontrichtung eines Hardpoints (SOD-Knoten) eines Objekts; false, wenn der Knoten fehlt
+  bool HardpointWorld(const Spawned& o, const std::string& name, float pos[3], float dir[3]) {
+    auto sm = spawn_models.find(o.sod);
+    if (sm == spawn_models.end()) return false;
+    for (const ModelHardpoint& mh : sm->second.hardpoints)
+      if (mh.name == name) {
+        Mat4 m, r;
+        ShipMatrices(o.st, o.scale, &m, &r);
+        Xf(m, mh.pos, pos);
+        Xf(r, mh.dir, dir);
+        return true;
+      }
+    return false;
+  }
+
+  // 0x557400 (OutputQueueManager::Update, Phase 1): das neue Schiff wird mit dockingSpeedFactor x Impulsgeschwindigkeit (0x465b50) entlang seiner Front bewegt, bis es den Punkt
+  // Hardpoint + Front x 1,1 x (Radius Station + Radius Schiff) (Konstante 0x5caa50) erreicht hat; erst danach bekommt es seine Befehle (Frachter: Abbau, Werftschiffe: Sammelpunkt).
+  void BeginExit(size_t ship, const Spawned& station, const float hp[3], const float dir[3], bool freighter) {
+    Spawned& sh = spawned[ship];
+    float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (l < 1e-4f) return;
+    float fwd[3] = {dir[0] / l, dir[1] / l, dir[2] / l};
+    for (int k = 0; k < 3; ++k) { sh.st.pos[k] = hp[k]; sh.exit_dir[k] = fwd[k]; }
+    const float R = 1.1f * (RadiusOf(station) + RadiusOf(sh));
+    for (int k = 0; k < 3; ++k) sh.exit_p2[k] = hp[k] + fwd[k] * R;
+    float horiz[3] = {fwd[0], 0.0f, fwd[2]};
+    if (std::fabs(horiz[0]) + std::fabs(horiz[2]) > 1e-3f) ShipFromForward(horiz, &sh.st);
+    const float impulse = sh.hodf_ok ? sh.hodf.impulseSpeed : 20.0f;
+    sh.exit_speed = impulse * sh.dock_factor;
+    FLEET_LOGI("DBG exit %s from (%.0f,%.0f,%.0f) dir (%.2f,%.2f,%.2f) speed %.0f to (%.0f,%.0f,%.0f)", sh.odf.c_str(), hp[0], hp[1], hp[2], fwd[0], fwd[1], fwd[2], sh.exit_speed, sh.exit_p2[0], sh.exit_p2[1], sh.exit_p2[2]);
+    sh.exiting = true;
+    sh.exit_freighter = freighter;
+    sh.st.has_target = false;
+    sh.st.speed = sh.exit_speed;
+  }
+
+  void StepExits(float dt) {
+    for (Spawned& sh : spawned) {
+      if (!sh.exiting) continue;
+      for (int k = 0; k < 3; ++k) sh.st.pos[k] += sh.exit_dir[k] * sh.exit_speed * dt;
+      const float dot = (sh.exit_p2[0] - sh.st.pos[0]) * sh.exit_dir[0] + (sh.exit_p2[1] - sh.st.pos[1]) * sh.exit_dir[1] + (sh.exit_p2[2] - sh.st.pos[2]) * sh.exit_dir[2];
+      if (dot <= 0.0f) {  // Phase 2: fertig, Befehle
+        sh.exiting = false;
+        sh.st.has_target = false;
+        sh.hv.ok = false;  // Flugphysik beginnt mit dem Zustand am Ausgang neu
+        if (sh.exit_freighter) sh.fr_state = 0;
+      }
+    }
   }
 
   void QueueBuild(int item) {
@@ -4275,6 +4346,7 @@ void Game::OnFrame(double dt) {
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
+    s.StepExits(static_cast<float>(std::min(dt, 0.1)));
     s.StepAi(static_cast<float>(std::min(dt, 0.1)));
     s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
     s.StepFreighters(static_cast<float>(std::min(dt, 0.1)));

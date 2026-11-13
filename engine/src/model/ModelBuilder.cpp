@@ -110,10 +110,13 @@ void BuildModel(const Sod& sod, const std::string& name, Model* out, BuildOption
     const SodNode& nd = sod.nodes[ni];
     if (nd.type != kNodeNull || nd.name.size() < 3) continue;
     const std::string l = [&] { std::string r = nd.name; for (char& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return r; }();
-    if (l[0] != 'h' || l[1] != 'p') continue;
-    bool digits = true;
-    for (size_t i = 2; i < l.size(); ++i) digits = digits && std::isdigit(static_cast<unsigned char>(l[i]));
-    if (!digits) continue;
+    const bool named = l == "build" || l == "dock";  // Hardpoints der Werften (buildHardpoint) und Bergbaustationen (dockingHardpoint)
+    if (!named) {
+      if (l[0] != 'h' || l[1] != 'p') continue;
+      bool digits = true;
+      for (size_t i = 2; i < l.size(); ++i) digits = digits && std::isdigit(static_cast<unsigned char>(l[i]));
+      if (!digits) continue;
+    }
     ModelHardpoint hp;
     hp.name = l;
     for (int k = 0; k < 3; ++k) {

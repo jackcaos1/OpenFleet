@@ -31,6 +31,7 @@ add_library(fleet_core STATIC
   src/game/Shockwave.cpp
   src/game/Boarding.cpp
   src/game/Skirmish.cpp
+  src/game/Economy.cpp
   src/game/Shell.cpp
   src/game/MenuLayout.cpp
   src/formats/GuiCfg.cpp

@@ -31,6 +31,7 @@
 #include "game/MenuLayout.h"
 #include "game/PathGrid.h"
 #include "game/Skirmish.h"
+#include "game/Economy.h"
 #include "formats/LabelMap.h"
 #include "io/ZipSource.h"
 #include "io/Inflate.h"
@@ -1675,6 +1676,85 @@ static void TestNoPathStops() {
 }
 
 
+static void TestEconomy() {
+  using namespace fleet;
+  // Cost factors (0x46bbf0): only computer players, only when a game type was chosen
+  CostRates rates;
+  CHECK(CostFactor(AiLevel::Hard, true, rates) == 0.4f);
+  CHECK(CostFactor(AiLevel::Medium, true, rates) == 0.8f);
+  CHECK(CostFactor(AiLevel::Easy, true, rates) == 1.0f);
+  CHECK(CostFactor(AiLevel::Human, true, rates) == 1.0f);
+  CHECK(CostFactor(AiLevel::Hard, false, rates) == 1.0f);
+  const BuildCost hard = ScaleCost(1200, 5, 500, 60.0f, 0.4f);
+  CHECK(hard.dilithium == 480 && hard.officers == 2 && hard.crew == 200);  // truncated
+  CHECK(std::fabs(hard.time - 24.0f) < 1e-4f);
+
+  TeamResources r;
+  r.dilithium = 1000; r.officers = 3; r.crew = 600; r.officers_max = 10;
+  BuildCost c = ScaleCost(1200, 5, 500, 60.0f, 1.0f);
+  CHECK(CanStart(r, c) == StartResult::NoDilithium);
+  r.dilithium = 1199.6f;  // the check allows half a point
+  CHECK(CanStart(r, c) == StartResult::NoOfficers);
+  r.officers = 5;
+  r.crew = 499;
+  CHECK(CanStart(r, c) == StartResult::NoCrew);
+  r.crew = 500;
+  CHECK(CanStart(r, c) == StartResult::Ok);
+  BuildCost free_officers = c;
+  free_officers.officers = 0;
+  r.officers = 0;
+  CHECK(CanStart(r, free_officers) == StartResult::Ok);  // no officers needed: never fails on officers
+  r.officers = 5;
+
+  // Queue of five, start, progress, completion
+  BuildQueue q;
+  QueueItem it;
+  it.odf = "fscout";
+  it.cost = ScaleCost(300, 1, 100, 10.0f, 1.0f);
+  for (int i = 0; i < 5; ++i) CHECK(q.Enqueue(it));
+  CHECK(!q.Enqueue(it));
+  TeamResources t;
+  t.dilithium = 700; t.officers = 1; t.crew = 250; t.officers_max = 5;
+  auto e = q.Update(&t, 0.1f);
+  CHECK(e.event == BuildQueue::Event::Started);
+  CHECK(t.dilithium == 400 && t.officers == 0 && t.crew == 150);
+  CHECK(q.Progress() == 0.0f);
+  e = q.Update(&t, 5.0f);
+  CHECK(e.event == BuildQueue::Event::None && std::fabs(q.Progress() - 0.5f) < 1e-4f);
+  e = q.Cancel(&t);
+  CHECK(e.event == BuildQueue::Event::Cancelled && t.dilithium == 700 && t.officers == 1 && t.crew == 250);
+  CHECK(q.Size() == 4 && !q.active);
+  e = q.Update(&t, 0.1f);  // next item starts
+  CHECK(e.event == BuildQueue::Event::Started);
+  e = q.Update(&t, 9.9f);
+  CHECK(e.event == BuildQueue::Event::None);
+  e = q.Update(&t, 0.2f);  // remaining drops below zero
+  CHECK(e.event == BuildQueue::Event::Completed && e.item.odf == "fscout");
+  CHECK(t.officers == 1 && t.dilithium == 400 && t.crew == 150);  // officers back, dilithium and crew stay spent
+  // Next item: not enough officers? officers are back, but crew 150 is enough; dilithium 400 enough -> starts
+  e = q.Update(&t, 0.1f);
+  CHECK(e.event == BuildQueue::Event::Started && q.Size() == 3);
+  // A failing start drops the item
+  TeamResources poor;
+  poor.dilithium = 0; poor.officers = 5; poor.crew = 999;
+  BuildQueue q2;
+  q2.Enqueue(it);
+  e = q2.Update(&poor, 0.1f);
+  CHECK(e.event == BuildQueue::Event::Failed && e.why == StartResult::NoDilithium && q2.Size() == 0);
+
+  // Clamps and crew income
+  TeamResources m;
+  m.dilithium = 10; m.dilithium_max = 20;
+  m.AddDilithium(100);
+  CHECK(m.dilithium == 20);
+  m.crew = 99; m.crew_max = 100;
+  AccumulateCrew(&m, 3.5f, 1.0f, 2.0f);
+  CHECK(m.crew == 100);
+  m.crew = 0;
+  AccumulateCrew(&m, 3.5f, 1.25f, 2.0f);
+  CHECK(std::fabs(m.crew - 8.75f) < 1e-4f);
+}
+
 static void TestSkirmish() {
   using namespace fleet;
   LabelMap lm;
@@ -1820,6 +1900,7 @@ int main() {
   TestHoverSim();
   TestPathGrid();
   TestSkirmish();
+  TestEconomy();
   TestMenuLayout();
   TestSaveGame();
   TestMapScene();

@@ -178,12 +178,17 @@ struct Builder {
   }
 
   // Schaltflaeche mit Symbol und Kurzbeschriftung in Rechteck r (Pixel).
-  void Button(UiAction action, const std::string& icon, const std::string& label, UiRect r, bool active, bool enabled) {
+  void Button(UiAction action, const std::string& icon, const std::string& label, UiRect r, bool active, bool enabled, float progress = -1.0f) {
     Solid(r.x, r.y, r.w, r.h, 0.03f, 0.05f, 0.09f, 1.0f);
     if (icon.size() > 2 && icon[0] == 'b' && icon[1] == '_') Sprite(icon, r.x, r.y, r.w, r.h);
     else if (!icon.empty()) Texture(icon, r.x, r.y, r.w, r.h);
     if (active) Solid(r.x, r.y, r.w, r.h, 0.1f, 0.85f, 0.35f, 0.38f);
     if (!enabled) Solid(r.x, r.y, r.w, r.h, 0.0f, 0.0f, 0.0f, 0.62f);
+    if (progress >= 0.0f) {
+      const float bh = std::max(3.0f, r.h * 0.12f);
+      Solid(r.x, r.y, r.w, bh, 0.0f, 0.0f, 0.0f, 0.8f);
+      Solid(r.x, r.y, r.w * std::min(1.0f, progress), bh, 0.1f, 0.6f, 1.0f, 1.0f);
+    }
     if (!label.empty()) {
       float th = std::max(8.0f, r.h * 0.3f);
       float tw = TextW(label, th);
@@ -459,18 +464,19 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
     // unten rechts das Infofeld, darueber am rechten Rand das Steuerfeld. Das 3D-Bild liegt dazwischen (und dahinter).
     const float res_w = 3.0f * std::max({dil.ok ? dil.area.w : 0.0f, crew.ok ? crew.area.w : 0.0f, off.ok ? off.area.w : 0.0f});
     const float res_h = std::max({dil.ok ? dil.area.h : 0.0f, crew.ok ? crew.area.h : 0.0f, off.ok ? off.area.h : 0.0f});
-    const float top_w = cin_w + std::max(spd_w, res_w), bot_w = mm_w + info_w;
-    const float top_h = std::max(cin_h, res_h + spd_h), bot_h = std::max(mm_h, info_h + ctl_h);
-    s = std::min(W / std::max(top_w, bot_w), 0.5f * H / (top_h + bot_h));
+    // Die Leiste (Spezialwaffen, Bauwarteschlange) sitzt direkt ueber dem Infofeld, das Steuerfeld darueber.
+    const float top_w = cin_w + res_w, bot_w = mm_w + std::max(info_w, spd_w);
+    const float top_h = std::max(cin_h, res_h), bot_h = std::max(mm_h, info_h + spd_h + ctl_h);
+    s = std::min(W / std::max(top_w, bot_w), 0.46f * H / (top_h + bot_h));
     s = std::max(s, 0.5f);
     if (s >= 1.0f) s = std::floor(s * 4.0f) / 4.0f;
     const float bottom = H;
     cin_x = 0; cin_y = 0;
-    spd_x = cin_w * s; spd_y = res_h * s;
     mm_x = 0; mm_y = bottom - mm_h * s;
     info_x = W - info_w * s; info_y = bottom - info_h * s;
-    ctl_x = W - ctl_w * s; ctl_y = info_y - ctl_h * s;
-    view_y = std::max(cin_h * s, spd_y + spd_h * s);
+    spd_x = W - spd_w * s; spd_y = info_y - spd_h * s;
+    ctl_x = W - ctl_w * s; ctl_y = spd_y - ctl_h * s;
+    view_y = std::max(cin_h, res_h) * s;
     bottom_top = std::min(mm_y, ctl_y);
   }
   L.scale = s;
@@ -579,7 +585,7 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
         UiRect rr = {bx, spd_y + ba[1] * s, ba[2] * s, ba[3] * s};
         if (static_cast<size_t>(i) < state.rail.size() && state.rail[static_cast<size_t>(i)].action != UiAction::None) {
           const HudCmd& cm = state.rail[static_cast<size_t>(i)];
-          b.Button(cm.action, cm.sprite, cm.label, rr, cm.active, cm.enabled);
+          b.Button(cm.action, cm.sprite, cm.label, rr, cm.active, cm.enabled, cm.progress);
         }
       }
     }

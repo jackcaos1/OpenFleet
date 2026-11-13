@@ -139,6 +139,7 @@ int SpriteRenderer::SetNodes(const Model& model, const SprLibrary& lib, FileSour
       l.pos[k] = n.pos[k];
       l.colour[k] = d->colour[k];
     }
+    if (n.name == "oreglow" || n.name == "dmooninf") l.lift = 60.0f;  // CLIENT-ANNAHME: die Leuchtflaeche (40 x 40) saesse sonst im Mond (Radius 53) und waere verdeckt
     l.size[0] = d->w;
     l.size[1] = d->h;
     // Nicht-quadratische Flaechen ohne billboard-Flag (z. B. der 7x18-Lichtfleck whiteconstbig) liegen in der Ebene des Knotens.
@@ -187,7 +188,7 @@ void SpriteRenderer::Draw(const Mat4& proj, const Mat4& vm, double time, float s
     const float px = scale * l.pos[0], py = scale * l.pos[1], pz = scale * l.pos[2];
     const float cx = m[0] * px + m[4] * py + m[8] * pz + m[12];
     const float cy = m[1] * px + m[5] * py + m[9] * pz + m[13];
-    const float cz = m[2] * px + m[6] * py + m[10] * pz + m[14];
+    const float cz = m[2] * px + m[6] * py + m[10] * pz + m[14] + scale * l.lift;
     glUniform3f(u_center_, cx, cy, cz);
     if (l.flat) {
       // Um 90 Grad gedreht: die Breite (x) laeuft entlang der Knoten-Achse "up", die Hoehe (y) entlang "right"

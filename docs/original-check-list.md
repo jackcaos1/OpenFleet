@@ -30,3 +30,10 @@ Things that could not be settled from the executable or the data files. Add a re
 - Construction ship: does the original start paying at the site (0x457b80) and show a scaffold; how long the ship stays; whether placement is checked.
 - Freighter loop speed and cargo handling (client model, see docs/formats/economy.md).
 - Resource display: dilithium / crew / officers values and when they change (crew income of starbases 3.5 per second each).
+
+## Build 95 (user test feedback)
+- Portrait layout: the rail (special weapons, build queue) now sits directly above the info panel, the control panel above it (user request). Landscape unchanged.
+- Build placement: client rule = footprint (bounding box half diagonal + `footprintBuffer`, 80 for stations, from station.odf: "to block building") against stations and other sites, plus keep-out zones around moons, planets, nebulae (effectRadius), wormholes, black holes and asteroid fields. Check in the original: what blocks placement, preview colour, and whether a second tap confirms (own touch design).
+- Construction animation: client invention (growing model, six orbiting worker bees from `workerBeeName`, beams). Original classes: `BuildingEffect`, `WorkerBee`, `mconstph.odf` placeholder, `weldingRadius`, `timeUntilClosure`. Compare look and duration; yards show nothing yet.
+- Dilithium moon glow: nodes `oreglow` / `dmooninf` (lights.spr, animated colour) were hidden inside the sphere by the depth test; client lifts them 60 units towards the camera. Check how the original shows the glow.
+- Moon info on tap (name, supply) is client design; the original may select moons like other objects.

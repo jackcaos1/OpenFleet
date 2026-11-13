@@ -370,7 +370,7 @@ struct Game::Impl {
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
   };
-  struct Moon { float pos[3]; float radius; float amount; };  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
+  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name; };  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
   std::vector<Moon> moons;
   bool infinite_moons = false;
   struct SpawnModel {
@@ -424,6 +424,7 @@ struct Game::Impl {
   unsigned next_id = 1;
   // Hauptmenue vor dem Spiel
   bool in_game = false;
+  bool keep_on_state = false;
   ShellScreen shell_screen = ShellScreen::Main;
   std::string shell_pressed;
   ShellLayout shell;
@@ -443,13 +444,17 @@ struct Game::Impl {
     int inst;           // Szeneninstanz (wird sie zum Spielobjekt, entfaellt dieses Hindernis); -1 = Asteroidenfeld
   };
   std::vector<MapObstacle> map_obstacles;
+  // Sperrzonen fuer Bauplaetze (Nutzerwunsch): Monde, Planeten, Nebel, Wurmloecher, Schwarze Loecher, Asteroidenfelder; Stationen siehe SiteCheck (footprintBuffer)
+  struct Blocker { float pos[3]; float r; };
+  std::vector<Blocker> build_blockers;
   PathGrid path_grid;                  // gesperrte Felder fuer die Wegsuche (Originalsystem x, z = -z_GL)
   int scene_hidden_count = 0;
   std::map<std::string, SpawnModel> spawn_models;
   int selected = -1, spawn_team = 1;
   int sym_mode = 2;      // Symbolansicht fuer Schiffe/Stationen in der Ferne: fest Drahtgitter (0 aus und 1 Fraktionslogo sind nicht mehr waehlbar)
-  float sym_px = 48.0f;  // unterhalb dieses Bildschirmdurchmessers (Pixel) wird das Symbol gezeigt
+  float sym_px = 100.0f;  // unterhalb dieses Bildschirmdurchmessers (Pixel) wird das Symbol gezeigt
   MarkerRenderer sel_markers;
+  MarkerRenderer build_markers;  // Schweissstrahlen der Bauarbeiter
   MarkerRenderer grid_markers;  // Orientierungsgitter in der Ebene des ausgewaehlten Objekts
   std::vector<SpawnEntry> spawn_list;
   std::vector<std::string> spawn_races;
@@ -597,9 +602,14 @@ struct Game::Impl {
       if (in.team > 0 || in.object < 0 || in.object >= static_cast<int>(map.objects.size()) || done.count(in.object)) continue;
       const BznObject& o = map.objects[static_cast<size_t>(in.object)];
       const std::string odf = ToLowerAscii(o.odf);
-      if (odf.compare(0, 6, "mdmoon") != 0) continue;
+      const OdfObject* mo = odf_lib->Get(odf);
+      std::string mcls;
+      if (!mo || !mo->GetString("classLabel", &mcls) || mcls != "scrap") continue;  // Dilithiummond (mdmoon1..3, mmooninf): classLabel "scrap" aus mdmoon.odf
       done.insert(in.object);
       Moon m;
+      m.infinite = false;
+      { int inf = 0; if (mo->GetInt("infinite", &inf)) m.infinite = inf != 0; }
+      { std::string un; m.name = mo->GetString("unitName", &un) && !un.empty() ? un : std::string("Dilithium Moon"); }
       const float* tm = in.transform.m;
       for (int k = 0; k < 3; ++k) m.pos[k] = tm[12 + k];
       const float sc = std::max(1e-3f, std::sqrt(tm[0] * tm[0] + tm[1] * tm[1] + tm[2] * tm[2]));
@@ -680,6 +690,9 @@ struct Game::Impl {
     }
     // Stempel der Instanz-Initialisierung im Original (Armada.exe 0x450810 Schwarzes Loch, 0x451e00 Nebel, 0x4531a0 Planet, 0x453f00 Wurmloch)
     neb_lights.clear();
+    build_blockers.clear();
+    for (const MapObstacle& mo : map_obstacles)
+      if (mo.inst < 0) build_blockers.push_back({{mo.pos[0], mo.pos[1], mo.pos[2]}, mo.radius});  // Asteroidenfelder
     for (size_t oi = 0; oi < map.objects.size(); ++oi) {
       const BznObject& o = map.objects[oi];
       const OdfObject* od = odf_lib ? odf_lib->Get(ToLowerAscii(o.odf)) : nullptr;
@@ -708,6 +721,22 @@ struct Game::Impl {
         }
       }
       const float x = base.m[12], z = -base.m[14];
+      {  // Sperrzone: Radius je Klasse; Monde und Planeten nach Modell, Nebel nach effectRadius
+        float br = -1;
+        if (cls == "blackhole_obj") { float er = 10.0f; od->GetFloat("EventRadius", &er); br = std::max(150.0f, blackhole_coef * er); }
+        else if (cls == "nebula_obj") { float er = 100.0f; od->GetFloat("effectRadius", &er); br = er; }
+        else if (cls == "wormhole_obj") br = 150.0f;
+        else if (cls == "planet_obj" || cls == "scrap") {
+          for (const MapInstance& in : scene.instances)
+            if (in.object == static_cast<int>(oi) && in.team <= 0) {
+              const float* m = in.transform.m;
+              const float sc = std::max(1e-3f, std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]));
+              br = map_orig_radius[static_cast<size_t>(in.model)] * sc;
+              break;
+            }
+        }
+        if (br > 0) build_blockers.push_back({{base.m[12], base.m[13], base.m[14]}, br});
+      }
       if (cls == "blackhole_obj") {
         float er = 10.0f; od->GetFloat("EventRadius", &er);
         path_grid.Stamp(x, z, blackhole_coef * er, PathGrid::kImpassable);
@@ -1677,6 +1706,8 @@ struct Game::Impl {
     Spawned& x = spawned[static_cast<size_t>(i)];
     x.sel = !x.sel;
     if (x.sel) {
+      for (size_t k = 0; k < spawned.size(); ++k)  // fremde Objekte nur einzeln, nie gemischt mit eigenen
+        if (static_cast<int>(k) != i && (x.team != human_team || spawned[k].team != human_team)) spawned[k].sel = false;
       selected = i;
     } else if (selected == i) {
       selected = -1;
@@ -1685,18 +1716,21 @@ struct Game::Impl {
     }
   }
 
+  // Befehle gelten nur fuer Objekte des eigenen Teams; fremde Objekte lassen sich auswaehlen (Info), aber nicht steuern.
+  bool CmdSel(const Spawned& x) const { return x.sel && x.team == human_team; }
+
   void StopSelected() {
     attack_armed = move_armed = transport_armed = false;
     if (SelCount() > 0) {
       for (Spawned& s : spawned)
-        if (s.sel) {
+        if (CmdSel(s)) {
           StopShip(&s.st);
           s.target_id = 0;
           s.auto_move = 0;
           s.beam_id = 0;
         }
     } else {
-      for (Spawned& s : spawned) StopShip(&s.st);
+      for (Spawned& s : spawned) if (s.team == human_team) StopShip(&s.st);
     }
   }
 
@@ -1706,9 +1740,9 @@ struct Game::Impl {
       Message("Nichts ausgewaehlt.");
       return;
     }
-    for (const Spawned& x : spawned) if (x.sel) UnstampStation(x);
-    for (const Spawned& x : spawned) if (x.sel) OwnerLose(x);
-    spawned.erase(std::remove_if(spawned.begin(), spawned.end(), [](const Spawned& x) { return x.sel; }), spawned.end());
+    for (const Spawned& x : spawned) if (CmdSel(x)) UnstampStation(x);
+    for (const Spawned& x : spawned) if (CmdSel(x)) OwnerLose(x);
+    spawned.erase(std::remove_if(spawned.begin(), spawned.end(), [this](const Spawned& x) { return CmdSel(x); }), spawned.end());
     selected = -1;
     Message(std::to_string(n) + (n == 1 ? " Objekt entfernt." : " Objekte entfernt."));
   }
@@ -2361,13 +2395,31 @@ struct Game::Impl {
     float o[3], d[3];
     ScreenRay(x, y, o, d);
     const int best = move_armed ? -1 : PickAny(o, d);
+    if (best < 0 && !move_armed && !attack_armed && !transport_armed && build_armed.empty()) {  // Dilithiummond antippen: Name und Vorrat
+      int mi = -1;
+      float mt = 1e30f;
+      for (size_t k = 0; k < moons.size(); ++k) {
+        float oc[3] = {o[0] - moons[k].pos[0], o[1] - moons[k].pos[1], o[2] - moons[k].pos[2]};
+        const float b = oc[0] * d[0] + oc[1] * d[1] + oc[2] * d[2], cc = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2] - moons[k].radius * moons[k].radius * 2.25f;
+        const float disc = b * b - cc;
+        if (disc < 0) continue;
+        const float t = -b - std::sqrt(disc);
+        if (t > 0 && t < mt) { mt = t; mi = static_cast<int>(k); }
+      }
+      if (mi >= 0) {
+        const Moon& m = moons[static_cast<size_t>(mi)];
+        Message(m.name + (m.infinite || infinite_moons ? ": unerschoepflich" : ": Vorrat " + std::to_string(static_cast<int>(m.amount))));
+        SelectOnly(-1);
+        return;
+      }
+    }
     if (attack_armed) {
       attack_armed = false;
       if (best >= 0) {
         const Spawned& t = spawned[static_cast<size_t>(best)];
         int n = 0;
         for (Spawned& a : spawned)
-          if (a.sel && !a.weapons.empty() && Hostile(a, t)) {
+          if (CmdSel(a) && !a.weapons.empty() && Hostile(a, t)) {
             a.target_id = t.id;
             ++n;
           }
@@ -2383,7 +2435,7 @@ struct Game::Impl {
         Spawned& t = spawned[static_cast<size_t>(best)];
         int n = 0;
         for (Spawned& a : spawned)
-          if (a.sel && a.id != t.id && !a.derelict && a.hp.crew > 1.0f) {
+          if (CmdSel(a) && a.id != t.id && !a.derelict && a.hp.crew > 1.0f) {
             a.beam_id = t.id;
             a.beam_timer = 0;
             ++n;
@@ -2396,10 +2448,22 @@ struct Game::Impl {
     }
     if (!build_armed.empty()) {  // Bauplatz fuer das ausgewaehlte Bauschiff (Tippebene y = 0)
       const std::string odf = build_armed;
-      build_armed.clear();
       if (selected >= 0 && selected < static_cast<int>(spawned.size()) && std::fabs(d[1]) > 1e-4f) {
         const float t = (kTapPlaneY - o[1]) / d[1];
         if (t > 0) {
+          const float tx = o[0] + d[0] * t, tz = o[2] + d[2] * t;
+          // Touch: erstes Antippen setzt eine Vorschau (gruen = frei, rot = gesperrt), erneutes Antippen daneben bestaetigt, anderswo verschiebt sie
+          const bool again = ghost_set && ghost_ok && std::hypot(tx - ghost[0], tz - ghost[2]) < std::max(150.0f, ghost_r);
+          if (!again) {
+            std::string why;
+            ghost_ok = SiteCheck(odf, tx, tz, &why);
+            ghost_set = true;
+            ghost[0] = tx; ghost[1] = kTapPlaneY; ghost[2] = tz;
+            Message(ghost_ok ? "Bauplatz frei. Nochmal antippen zum Bestaetigen." : why);
+            return;
+          }
+          build_armed.clear();
+          ghost_set = false;
           Spawned& rig = spawned[static_cast<size_t>(selected)];
           rig.site_odf = odf;
           rig.site[0] = o[0] + d[0] * t; rig.site[1] = kTapPlaneY; rig.site[2] = o[2] + d[2] * t;
@@ -2425,7 +2489,7 @@ struct Game::Impl {
     // Ziel fuer alle ausgewaehlten beweglichen Schiffe; mehrere werden quer zur Blickrichtung nebeneinander gestaffelt.
     std::vector<size_t> mv;
     for (size_t i = 0; i < spawned.size(); ++i)
-      if (spawned[i].sel && spawned[i].movable) mv.push_back(i);
+      if (CmdSel(spawned[i]) && spawned[i].movable) mv.push_back(i);
     if (!mv.empty() && !move_armed && !tap_moves) return;  // Ohne vorher gedrueckte Bewegen-Taste kein Ziel (Vertippen beim Auswaehlen)
     if (!mv.empty()) {
       const Spawned& lead = spawned[selected >= 0 && spawned[static_cast<size_t>(selected)].movable ? static_cast<size_t>(selected) : mv[0]];
@@ -2982,7 +3046,7 @@ struct Game::Impl {
       int moon = -1;
       float md = 1e30f;
       for (size_t k = 0; k < moons.size(); ++k) {
-        if (!infinite_moons && moons[k].amount <= 0) continue;
+        if (!infinite_moons && !moons[k].infinite && moons[k].amount <= 0) continue;
         const float d = Dist3(moons[k].pos, st.st.pos);
         if (d < md) { md = d; moon = static_cast<int>(k); }
       }
@@ -3015,12 +3079,13 @@ struct Game::Impl {
           while (f.fr_timer >= 1.5f && f.cargo < f.cargo_max) {  // shotDelay des Strahls
             f.fr_timer -= 1.5f;
             const float take = std::min(15.0f, f.cargo_max - f.cargo);  // damageBase
-            const float got = infinite_moons ? take : std::min(take, m.amount);
+            const bool inf = infinite_moons || m.infinite;
+            const float got = inf ? take : std::min(take, m.amount);
             f.cargo += got;
-            if (!infinite_moons) m.amount -= got;
+            if (!inf) m.amount -= got;
             if (got <= 0) break;
           }
-          if (f.cargo >= f.cargo_max - 0.01f || (!infinite_moons && m.amount <= 0)) f.fr_state = 3;
+          if (f.cargo >= f.cargo_max - 0.01f || (!infinite_moons && !m.infinite && m.amount <= 0)) f.fr_state = 3;
           break;
         }
         case 3: {
@@ -3152,7 +3217,8 @@ struct Game::Impl {
                       if (o.has_site && Dist3(o.site, q) < 360.0f) return false;
                     }
                     for (const Moon& m : moons) if (Dist3(m.pos, q) < m.radius + 140.0f) return false;
-                    return true;
+                    std::string why;
+                    return SiteCheck(e.unit, px, -pz, &why);
                   },
                   &x, &z);
     out[0] = x; out[1] = 0.0f; out[2] = -z;
@@ -3337,9 +3403,65 @@ struct Game::Impl {
     }
   }
 
+  // ---- Bauplatzpruefung (Nutzerwunsch; das Original legt den Fussabdruck von Stationen als Bounding-Box + footprintBuffer an, "to block building", station.odf) ----
+  bool ghost_set = false, ghost_ok = false;
+  float ghost[3] = {0, 0, 0}, ghost_r = 100.0f;
+  std::map<std::string, float> footprint_cache;
+
+  // Radius der Grundflaeche einer ODF: halbe Diagonale der Bounding-Box in x/z (skaliert) plus footprintBuffer
+  float FootprintRadius(const std::string& odf) {
+    auto it = footprint_cache.find(odf);
+    if (it != footprint_cache.end()) return it->second;
+    float r = 100.0f;
+    BznObject bo;
+    bo.odf = odf;
+    MapObjectInfo info;
+    if (ResolveMapObject(bo, &info) && !info.sod.empty() && EnsureSpawnModel(info.sod)) {
+      const float* b = spawn_models[info.sod].bounds;
+      const float sc = info.scale > 0 ? info.scale : 1.0f;
+      r = 0.5f * std::sqrt((b[3] - b[0]) * (b[3] - b[0]) + (b[5] - b[2]) * (b[5] - b[2])) * sc;
+    }
+    float buf = 0;
+    if (const OdfObject* od = odf_lib ? odf_lib->Get(odf) : nullptr) od->GetFloat("footprintBuffer", &buf);
+    footprint_cache[odf] = r + buf;
+    return r + buf;
+  }
+
+  // Ist der Bauplatz frei? why bekommt den Grund (leer = frei). x/z im GL-System.
+  bool SiteCheck(const std::string& odf, float x, float z, std::string* why) {
+    const float rn = FootprintRadius(odf);
+    ghost_r = rn;
+    for (const Blocker& b : build_blockers) {
+      const float dx = x - b.pos[0], dz = z - b.pos[2];
+      if (std::sqrt(dx * dx + dz * dz) < b.r + rn) { *why = "Zu nah an einem Mond, Planeten, Nebel oder Asteroidenfeld."; return false; }
+    }
+    for (const Spawned& o : spawned) {
+      if (o.dying || (o.movable && !o.has_site)) continue;
+      float ro = 0;
+      float ox = o.st.pos[0], oz = o.st.pos[2];
+      if (!o.movable) ro = FootprintRadius(o.odf_l.empty() ? ToLowerAscii(o.odf) : o.odf_l);
+      else { ro = FootprintRadius(o.site_odf); ox = o.site[0]; oz = o.site[2]; }  // Bauplatz eines anderen Bauschiffs
+      const float dx = x - ox, dz = z - oz;
+      if (std::sqrt(dx * dx + dz * dz) < ro + rn) { *why = "Zu nah an einer Station."; return false; }
+    }
+    if (!path_grid.Empty() && path_grid.Blocked(x, -z)) { *why = "Gesperrtes Gebiet."; return false; }
+    return true;
+  }
+
+  // SOD-Name einer ODF (aus der ODF aufgeloest), leer wenn es keins gibt
+  std::string SodOfOdf(const std::string& odf, float* scale = nullptr) {
+    BznObject bo;
+    bo.odf = odf;
+    MapObjectInfo info;
+    if (!ResolveMapObject(bo, &info) || info.sod.empty()) return std::string();
+    if (scale) *scale = info.scale > 0 ? info.scale : 1.0f;
+    return info.sod;
+  }
+
   void QueueBuild(int item) {
     if (selected < 0 || selected >= static_cast<int>(spawned.size())) return;
     Spawned& sp = spawned[static_cast<size_t>(selected)];
+    if (sp.team != human_team) return;
     if (item < 0 || item >= static_cast<int>(sp.build_items.size())) return;
     const std::string& odf = sp.build_items[static_cast<size_t>(item)];
     if (sp.movable) {  // Bauschiff: Bauplatz antippen
@@ -3356,6 +3478,15 @@ struct Game::Impl {
       UnitDef qu;
       Message((odf_lib && LoadUnitDef(*odf_lib, odf, &qu) && !qu.unit_name.empty() ? qu.unit_name : odf) + " in der Warteschlange (" + std::to_string(sp.bq.Size()) + ").");
     }
+  }
+
+  void RemoveQueued(size_t i) {
+    if (selected < 0 || selected >= static_cast<int>(spawned.size())) return;
+    Spawned& sp = spawned[static_cast<size_t>(selected)];
+    if (sp.team != human_team || i >= sp.bq.items.size()) return;
+    if (i == 0 && sp.bq.active) { CancelBuild(); return; }
+    sp.bq.items.erase(sp.bq.items.begin() + static_cast<long>(i));
+    Message("Aus der Warteschlange entfernt.");
   }
 
   void CancelBuild() {
@@ -3543,6 +3674,7 @@ struct Game::Impl {
     st->rail.assign(6, HudCmd());
     if (!sel) return;
     const Spawned& sp = spawned[static_cast<size_t>(selected)];
+    if (sp.team != human_team) return;  // fremdes Objekt: nur Infofeld, keine Befehle und keine Spezialwaffen
     auto cmd = [](UiAction a, const char* spr, const char* label, bool enabled, bool active = false) {
       HudCmd c;
       c.action = a; c.sprite = spr; c.label = label; c.enabled = enabled; c.active = active;
@@ -3582,7 +3714,8 @@ struct Game::Impl {
     for (size_t i = 0; i < sp.bq.items.size() && i < 6; ++i) {  // Warteschlange: der erste Eintrag wird gebaut
       char lab[16];
       std::snprintf(lab, sizeof lab, i == 0 && sp.bq.active ? "%d%%" : "...", static_cast<int>(sp.bq.Progress() * 100.0f));
-      st->rail[i] = cmd(UiAction::None, ("b_" + sp.bq.items[i].odf).c_str(), lab, true, i == 0 && sp.bq.active);
+      st->rail[i] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Queue0) + static_cast<int>(i)), ("b_" + sp.bq.items[i].odf).c_str(), lab, true, i == 0 && sp.bq.active);
+      if (i == 0 && sp.bq.active) st->rail[i].progress = sp.bq.Progress();
     }
     for (size_t i = 0; i < sp.specials.size() && i < 6 && sp.bq.items.empty(); ++i) {
       std::string lab = sp.specials[i].second;
@@ -3752,7 +3885,7 @@ struct Game::Impl {
         break;
       case UiAction::StandDown:
         for (Spawned& x : spawned)
-          if (x.sel) {
+          if (CmdSel(x)) {
             x.alert = 3;
             x.target_id = 0;
             x.auto_move = 0;
@@ -3761,20 +3894,23 @@ struct Game::Impl {
         break;
       case UiAction::SelfDestruct:
         for (Spawned& x : spawned)
-          if (x.sel && !x.derelict) x.hp.exploded = true;
+          if (CmdSel(x) && !x.derelict) x.hp.exploded = true;
         break;
-      case UiAction::Back: cmd_page = CmdPage::Main; build_armed.clear(); break;
+      case UiAction::Back: cmd_page = CmdPage::Main; build_armed.clear(); ghost_set = false; break;
       case UiAction::BuildMenu: cmd_page = CmdPage::Build; break;
       case UiAction::Build0: case UiAction::Build1: case UiAction::Build2: case UiAction::Build3: case UiAction::Build4:
       case UiAction::Build5: case UiAction::Build6: case UiAction::Build7: case UiAction::Build8: case UiAction::Build9:
         QueueBuild(static_cast<int>(a) - static_cast<int>(UiAction::Build0));
         break;
-      case UiAction::CancelBuild: build_armed.clear(); CancelBuild(); break;
+      case UiAction::CancelBuild: build_armed.clear(); ghost_set = false; CancelBuild(); break;
+      case UiAction::Queue0: case UiAction::Queue1: case UiAction::Queue2: case UiAction::Queue3: case UiAction::Queue4: case UiAction::Queue5:
+        RemoveQueued(static_cast<size_t>(static_cast<int>(a) - static_cast<int>(UiAction::Queue0)));  // Tippen auf einen Eintrag nimmt ihn aus der Warteschlange
+        break;
       case UiAction::AlertGreen: case UiAction::AlertYellow: case UiAction::AlertRed:
         if (SelCount() > 0) {
           const int lv = a == UiAction::AlertGreen ? 0 : (a == UiAction::AlertYellow ? 1 : 2);
           for (Spawned& x : spawned)
-            if (x.sel) x.alert = lv;
+            if (CmdSel(x)) x.alert = lv;
           Message(lv == 0 ? "Alarmstufe Gruen (flieht bei Beschuss)" : (lv == 1 ? "Alarmstufe Gelb" : "Alarmstufe Rot"));
         }
         break;
@@ -3904,7 +4040,7 @@ bool Game::OnSurfaceCreated() {
   const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
   const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
   FLEET_LOGI("GL: %s | %s", version ? version : "?", renderer ? renderer : "?");
-  impl_->gl_ready = impl_->triangle.Init() && impl_->models.Init() && impl_->sprites.Init() && impl_->markers.Init() && impl_->map_markers.Init() && impl_->sel_markers.Init() && impl_->grid_markers.Init() && impl_->effects.Init() && impl_->text.Init() && impl_->hud_gl.Init();
+  impl_->gl_ready = impl_->triangle.Init() && impl_->models.Init() && impl_->sprites.Init() && impl_->markers.Init() && impl_->map_markers.Init() && impl_->sel_markers.Init() && impl_->grid_markers.Init() && impl_->build_markers.Init() && impl_->effects.Init() && impl_->text.Init() && impl_->hud_gl.Init();
   impl_->models.SetAlphaMode(impl_->alpha_mode);
   impl_->models.SetTeamColor(kTeamColors[impl_->team_color].rgb[0], kTeamColors[impl_->team_color].rgb[1],
                              kTeamColors[impl_->team_color].rgb[2]);
@@ -3936,6 +4072,10 @@ void Game::OnResize(int width, int height) {
 
 void Game::OnFrame(double dt) {
   Impl& s = *impl_;
+  if (s.keep_on_state != s.in_game) {  // Bildschirm bleibt waehrend einer laufenden Runde an
+    s.keep_on_state = s.in_game;
+    if (s.host) s.host->SetKeepScreenOn(s.in_game);
+  }
   s.clock += dt;
   if (dt > 0.3 && s.in_game) s.Message("Langer Frame: " + std::to_string(static_cast<int>(dt * 1000.0)) + " ms");  // Diagnose fuer "App reagiert nicht"
   s.ApplyPending();
@@ -4102,6 +4242,57 @@ void Game::OnFrame(double dt) {
       it->second.r->Draw(proj * view * m, rot * r, &m);
       if (it->second.sp) it->second.sp->Draw(proj, view * m, s.clock);
     }
+    {  // Bau-Animation (Nutzerwunsch; Annahme, das Original (BuildingEffect, WorkerBee) ist nicht nachgebaut): wachsende Station am Bauplatz, sechs Arbeiter kreisen und schweissen
+      std::vector<MarkerRenderer::Marker> beams;
+      float beam_len = 0;
+      for (const Impl::Spawned& rig : s.spawned) {
+        if (!rig.movable || !rig.bq.active || rig.bq.items.empty() || rig.dying) continue;
+        float sc = 1.0f;
+        const std::string sod = s.SodOfOdf(rig.bq.items.front().odf, &sc);
+        if (sod.empty() || !s.EnsureSpawnModel(sod)) continue;
+        const float prog = std::max(0.0f, std::min(1.0f, rig.bq.Progress()));
+        const float fp = s.FootprintRadius(rig.bq.items.front().odf);
+        ShipState st;
+        for (int k = 0; k < 3; ++k) st.pos[k] = rig.site[k];
+        st.pos[1] = 0.0f;
+        Mat4 m, r;
+        const float grow = 0.15f + 0.85f * prog;
+        ShipMatrices(st, sc * grow, &m, &r);
+        const Impl::SpawnModel& sm = s.spawn_models[sod];
+        const float* c = kMapTeamColors[rig.team >= 0 && rig.team < 9 ? rig.team : 0];
+        sm.r->SetTeamColor(c[0], c[1], c[2]);
+        sm.r->Draw(proj * view * m, rot * r, &m);
+        std::string bee_odf;
+        if (const OdfObject* od = s.odf_lib ? s.odf_lib->Get(rig.odf_l) : nullptr) od->GetString("workerBeeName", &bee_odf);
+        const std::string bee_sod = bee_odf.empty() ? std::string() : s.SodOfOdf(ToLowerAscii(bee_odf));
+        const float ring = std::max(40.0f, 0.55f * fp);
+        beam_len = ring;
+        const int nb = 6;  // numberOfWorkerBees (const.odf)
+        for (int i = 0; i < nb; ++i) {
+          const float a = static_cast<float>(s.clock) * 0.8f + static_cast<float>(i) * 6.2831853f / static_cast<float>(nb);
+          const float bx = rig.site[0] + std::cos(a) * ring, bz = rig.site[2] + std::sin(a) * ring, by = 6.0f + 4.0f * std::sin(static_cast<float>(s.clock) * 2.0f + static_cast<float>(i));
+          if (!bee_sod.empty() && s.EnsureSpawnModel(bee_sod)) {
+            ShipState bs;
+            bs.pos[0] = bx; bs.pos[1] = by; bs.pos[2] = bz;
+            bs.yaw = a + 1.5708f;
+            Mat4 bm, br;
+            ShipMatrices(bs, 3.0f, &bm, &br);
+            const Impl::SpawnModel& bsm = s.spawn_models[bee_sod];
+            bsm.r->SetTeamColor(c[0], c[1], c[2]);
+            bsm.r->Draw(proj * view * bm, rot * br, &bm);
+          }
+          MarkerRenderer::Marker mk;
+          mk.pos[0] = bx; mk.pos[1] = by; mk.pos[2] = bz;
+          mk.dir[0] = -std::cos(a); mk.dir[1] = 0.0f; mk.dir[2] = -std::sin(a);
+          mk.color[0] = 1.0f; mk.color[1] = 0.8f; mk.color[2] = 0.3f;
+          beams.push_back(mk);
+        }
+      }
+      if (!beams.empty()) {
+        s.build_markers.Set(beams, beam_len);
+        s.build_markers.Draw(proj * view, 4.0f);
+      }
+    }
     for (const Impl::Fireball& f : s.fireballs) {
       auto it = s.spawn_models.find(f.model);
       if (it != s.spawn_models.end() && it->second.sp) it->second.sp->Draw(proj, view * Mat4::Translation(f.pos[0], f.pos[1], f.pos[2]) * AxisAngle(f.axis, kFireballSpin * f.age), f.age, f.scale);
@@ -4118,7 +4309,8 @@ void Game::OnFrame(double dt) {
           g.size *= 0.83f;
           if (g.size < 2.0f) { s.gridfx.erase(s.gridfx.begin() + static_cast<long>(gi)); continue; }
         }
-        const float th = 2.0f * g.size / 50.0f, sn = std::sin(th), cs = std::cos(th), r = g.size;
+        // Abweichung vom Original (Entscheidung des Projektinhabers): der Marker waechst mit dem Kameraabstand mit, damit er beim Auszoomen sichtbar bleibt
+        const float th = 2.0f * g.size / 50.0f, sn = std::sin(th), cs = std::cos(th), r = g.size * std::max(1.0f, dist / 1500.0f);
         const float c[4][2] = {{sn * r, cs * r}, {cs * r, -sn * r}, {-sn * r, -cs * r}, {-cs * r, sn * r}};
         const float uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
         mesh.clear();
@@ -4129,6 +4321,14 @@ void Game::OnFrame(double dt) {
         const float tint[3] = {1.0f, 1.0f, 1.0f};
         s.effects.DrawMesh(proj, view * Mat4::Translation(g.pos[0], g.pos[1], g.pos[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
       }
+    }
+    if (s.source && s.ghost_set && !s.build_armed.empty()) {  // Bauplatz-Vorschau: Quadrat in Groesse der Grundflaeche, gruen frei / rot gesperrt
+      std::vector<float> mesh;
+      const float r = s.ghost_r;
+      const float c[4][2] = {{-r, -r}, {r, -r}, {r, r}, {-r, r}}, uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+      for (int k : {0, 1, 2, 0, 2, 3}) { mesh.push_back(c[k][0]); mesh.push_back(0.0f); mesh.push_back(c[k][1]); mesh.push_back(uv[k][0]); mesh.push_back(uv[k][1]); }
+      const float tint[3] = {s.ghost_ok ? 0.2f : 1.0f, s.ghost_ok ? 1.0f : 0.2f, 0.2f};
+      s.effects.DrawMesh(proj, view * Mat4::Translation(s.ghost[0], s.ghost[1], s.ghost[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
     }
     if (s.source) {
       std::vector<float> mesh;
@@ -4188,6 +4388,10 @@ void Game::OnFrame(double dt) {
           d.additive = true;
           dr.push_back(d);
         };
+        if (sp.bq.active) {  // Baufortschritt (Nutzerwunsch): blauer Balken unter dem Schildbalken
+          bar(bx, by + bh + ps, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
+          bar(bx, by + bh + ps, bw, bh, sp.bq.Progress(), 0.1f, 0.5f, 1.0f);
+        }
         if (sp.hp.shield_max > 0.1f) {
           const float f = std::max(0.0f, std::min(1.0f, sp.hp.shield / sp.hp.shield_max));
           bar(bx, by, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
@@ -4244,7 +4448,7 @@ void Game::OnFrame(double dt) {
             d.rgba[0] = col[0]; d.rgba[1] = col[1]; d.rgba[2] = col[2]; d.rgba[3] = 1.0f;
             dr.push_back(d);
           }
-          if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
+          if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->bq.active || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
             ship_bars(*sy.ship, px - 0.7f * sz, py - 0.7f * sz, px + 0.7f * sz, py + 0.7f * sz);
         } else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
           static const char* kIcon[4] = {"federation_icon", "klingon_icon", "romulan_icon", "borg_icon"};
@@ -4270,7 +4474,7 @@ void Game::OnFrame(double dt) {
         }
       }
       for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
-        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
+        if (sp.derelict || (!sp.sel && !sp.bq.active && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
         if (it == s.spawn_models.end()) continue;
         if (sym_small(sp.st.pos, it->second.radius * sp.scale)) continue;  // Symbolansicht zeichnet die Balken selbst
@@ -4615,7 +4819,7 @@ std::string Game::DebugReport() const {
             out += buf;
           }
       }
-    for (const Impl::Moon& m : s.moons) { std::snprintf(buf, sizeof buf, "  moon (%.0f,%.0f) r %.0f amount %.0f\n", m.pos[0], m.pos[2], m.radius, m.amount); if (t == 1) out += buf; }
+    for (const Impl::Moon& m : s.moons) { std::snprintf(buf, sizeof buf, "  moon %s (%.0f,%.0f) r %.0f amount %.0f inf %d\n", m.name.c_str(), m.pos[0], m.pos[2], m.radius, m.amount, m.infinite ? 1 : 0); if (t == 1) out += buf; }
     const TeamResources& r = s.team_res[t];
     std::snprintf(buf, sizeof buf, "team %d: dil %.0f crew %.0f off %d | stations %d freighters %d warships %d other %d\n", t, r.dilithium, r.crew, r.officers, stations, freighters, armed, ships);
     out += buf;

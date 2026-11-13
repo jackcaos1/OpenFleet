@@ -26,6 +26,8 @@ class GameHost {
   virtual void RequestDataFolder() = 0;
   // Nutzer waehlt "Beenden" im Hauptmenue.
   virtual void RequestQuit() {}
+  // Waehrend einer laufenden Runde darf sich der Bildschirm nicht abschalten.
+  virtual void SetKeepScreenOn(bool) {}
 };
 
 // Spielkern: Die Plattform (Desktop/Android) besitzt Fenster und GL-Kontext und ruft diese Methoden auf.

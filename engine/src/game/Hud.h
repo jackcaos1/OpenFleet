@@ -30,6 +30,7 @@ struct HudCmd {
   UiAction action = UiAction::None;
   std::string sprite, label;
   bool active = false, enabled = true;
+  float progress = -1.0f;  // >= 0: Fortschrittsbalken auf der Taste (Bau)
 };
 
 // Ausgewaehltes Objekt fuer das Schiffsfeld (Werte 0..1; -1 = Anzeige ausgegraut).

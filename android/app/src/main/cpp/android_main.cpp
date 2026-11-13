@@ -6,6 +6,8 @@
 #include <jni.h>
 #include <aaudio/AAudio.h>
 #include <android/input.h>
+#include <android/native_activity.h>
+#include <android/window.h>
 #include <android/log.h>
 #include <android_native_app_glue.h>
 #include <time.h>
@@ -64,6 +66,10 @@ class AndroidHost : public fleet::GameHost {
     Clear();
   }
   void RequestQuit() override { quit_requested = true; }
+  void SetKeepScreenOn(bool on) override {
+    if (native_) ANativeActivity_setWindowFlags(native_, on ? AWINDOW_FLAG_KEEP_SCREEN_ON : 0, AWINDOW_FLAG_KEEP_SCREEN_ON);
+  }
+  ANativeActivity* native_ = nullptr;
   bool quit_requested = false;
   void RequestDataFolder() override {
     env_->CallVoidMethod(activity_, pick_folder_);
@@ -425,6 +431,7 @@ void android_main(android_app* app) {
   JNIEnv* env = nullptr;
   app->activity->vm->AttachCurrentThread(&env, nullptr);
   AndroidHost host(env, app->activity->clazz);  // clazz ist hier die Activity-Instanz
+  host.native_ = app->activity;
   App state;
   state.host = &host;
   state.source = std::shared_ptr<fleet::FileSource>(fleet::OpenSafFolder(app->activity->vm, app->activity->clazz));

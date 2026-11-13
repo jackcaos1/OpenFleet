@@ -3533,17 +3533,25 @@ void Game::OnFrame(double dt) {
         // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
         const float ps = std::max(1.0f, std::min(W / 640.0f, H / 480.0f));  // das Original rechnet in Pixeln eines 640 x 480-Fensters
         const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
-        auto quad = [&](float x, float y, float w, float h, float r, float g, float b) {
+        // Balken als Sprite select_shield_bar (weisser Streifen, getoent); die Fuellung zeigt nur den Anteil f der Grafik (Original 0x597a70)
+        auto bar = [&](float x, float y, float w, float h, float frac, float r, float g, float b) {
           HudDraw d;
-          d.x = x; d.y = y; d.w = w; d.h = h;
+          float uv[4];
+          bool add = false;
+          if (!s.hud_data.Sprite("select_shield_bar", &d.tex, uv, &add)) {
+            d.x = x; d.y = y; d.w = w * frac; d.h = h;
+          } else {
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[0] + (uv[2] - uv[0]) * frac; d.v1 = uv[3];
+            d.x = x; d.y = y; d.w = w * frac; d.h = h;
+          }
           d.rgba[0] = r; d.rgba[1] = g; d.rgba[2] = b; d.rgba[3] = 1.0f;
           d.additive = true;
           dr.push_back(d);
         };
         if (sp.hp.shield_max > 0.1f) {
           const float f = std::max(0.0f, std::min(1.0f, sp.hp.shield / sp.hp.shield_max));
-          quad(bx, by, bw, bh, 0.2f, 0.2f, 0.2f);
-          quad(bx, by, bw * f, bh, 0.5f * (1.0f - f), 0.5f * f, 0.0f);
+          bar(bx, by, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
+          bar(bx, by, bw, bh, f, 0.5f * (1.0f - f), 0.5f * f, 0.0f);
         }
         if (sp.hp.crew_max > 0.0f) {
           const float f = sp.hp.crew / sp.hp.crew_max;

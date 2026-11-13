@@ -75,3 +75,25 @@ Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew
   station's queue manager (+0x7c8, OutputQueueManager), sets craft state 8 with the station as partner (0x46eb70) and subtracts the freighter's crew (+0x4d8, crewCost 100) from the station's crew (0x467570).
 - Client: `OnBuildEvent` (Game.cpp) does the same: free freighter at the SOD node `dock`, station crew reduced by the freighter's crew. Open: the exact meaning of craft state 8, the exit path through the output queue,
   and the default dock hardpoint name when the ODF has none (all four mining models have a node `dock`).
+
+## Freighter behaviour (read 13.11.2026; partly ported)
+**Order types** (CraftProcess, `NewOrder` 0x426ad0 / per-frame dispatcher 0x427ff0 with the byte table 0x42813c and jump table 0x4280f4): the order record's type selects a handler slot of the process.
+**Order 24 = MINE** (slot 0x6c, 0x42b430). **Order 8 = "docked with a station"** (handler slot 0x54, 0x42af80; `NewOrder` case 8 sets the craft's inactive flag +0x67c and clears its velocity target). So the user's guess
+(state 8 = mining) was close but not exact: 8 is the docked / in-station state, 24 is the mining routine. `MiningStation::CreateFreighter` creates the freighter and issues order 8 with the station as partner.
+
+Freighter object: +0x794 capacity (class +0x518 = `maxScrap`), +0x798 cargo, +0x79c target moon handle, +0x7a0 target station handle, +0x1c4 the mining beam weapon (`MiningBeam`, class `minebm`).
+
+**Mining routine (0x42b430), one call per AI tick:**
+1. Target moon: if the current one is missing or its health (+0x46c) is not above 0.01, take the nearest one around the freighter (0x435010, search radius 100000) and store it in +0x79c.
+2. Target station: if the stored one is missing or destroyed, the nearest own `MiningStation` by 3D distance (0x45a620 walks the global list 0x6399a4, filter: owner team, not destroyed) is stored in +0x7a0.
+3. If the free cargo space is below 0.01 (full): release the moon (if the freighter is its user) and deliver. With no moon: deliver when cargo > 5, otherwise stop and go idle (order 2).
+4. Otherwise approach the moon until the distance between the two surfaces is within the beam range minus 15 (0x42dc30 / 0x42e4a0 move helpers). If another freighter is the moon's current user (+0x494, set by 0x453580), this one holds 30 units further out and does not fire (the moon serves one freighter at a time).
+5. In range: aim the beam at the moon (0x4582f0 -> weapon 0x507180 / 0x5071c0). When the moon's health drops below 0.01, the target is cleared, the moon released and a random wait timer set.
+6. Delivery: fly towards the station; when the distance is below class field +0x208 the freighter calls the station's queue manager (vtable +0x10 of the object at +0x7c4, `MiningInputQueue`) and issues **order 8 with the station** (dock). `MiningStation::Receive` (0x45a910) then unloads at `dilithiumTransferRate` per second (see above).
+
+**Beam hit (`MiningBeam`, 0x4e0900, once per shot):** amount = min(beam damage (class +0x7c; `minebm` damageBase 15), free cargo space, moon health); cargo += amount; the moon's health is set to health - amount (the moon's health IS its dilithium
+supply, ODF `maxHealth` 20000); the moon's user := the freighter (0x453580); when the moon's health falls below 0.01 a message (type 0x12) goes to the owner. Shot delay 1.5 s (`gminebm`).
+
+**Client (Game.cpp StepFreighters)** now follows these rules for the decisions: nearest station and nearest moon measured from the freighter, one miner per moon with the 30 unit hold, full / idle thresholds (0.01 and 5), per-hit amount.
+Still invented: the approach / hold positions (surface distance 100), the docking distance, and the whole undocking: how a docked freighter leaves (order 8 handler 0x42af80, `MiningInputQueue`, the station's `OutputQueueManager` and the spline path out of the dock) is **not read yet**; the client just continues from the dock point.
+Also not read: 0x435010's filter (which objects count as moons), the random wait after a moon is exhausted, what happens when the station is destroyed while docked.

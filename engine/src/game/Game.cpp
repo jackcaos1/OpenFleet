@@ -366,11 +366,12 @@ struct Game::Impl {
     bool freighter = false;                 // hat einen Bergbaustrahl
     float cargo = 0, cargo_max = 0;         // Ladung / maxScrap
     int fr_state = 0;                       // 0 Leerlauf, 1 zum Mond, 2 abbauen, 3 zur Station, 4 entladen
+    int fr_moon = -1;                       // Ziel-Mond (Index in moons)
     float fr_timer = 0;
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
   };
-  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; };
+  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; unsigned user = 0; };
   int moon_sel = -1;  // angetippter Dilithiummond (Infofeld), -1 keiner  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
   std::vector<Moon> moons;
   bool infinite_moons = false;
@@ -3068,22 +3069,30 @@ struct Game::Impl {
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
       if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0) continue;
+      // Armada.exe 0x45a620: naechste eigene Bergbaustation (3D-Abstand vom Frachter, Liste aller Bergbaustationen), ohne weitere Auswahlregel
       int home = -1;
       float bd = 1e30f;
       for (size_t k = 0; k < spawned.size(); ++k) {
         const Spawned& st = spawned[k];
-        if (!st.mining_stn || st.team != f.team || st.derelict || st.dying || st.bq.active) continue;
+        if (!st.mining_stn || st.team != f.team || st.derelict || st.dying) continue;
         const float d = Dist3(st.st.pos, f.st.pos);
         if (d < bd) { bd = d; home = static_cast<int>(k); }
       }
       if (home < 0) { f.fr_state = 0; continue; }
       const Spawned& st = spawned[static_cast<size_t>(home)];
-      int moon = -1;
-      float md = 1e30f;
-      for (size_t k = 0; k < moons.size(); ++k) {
-        if (!infinite_moons && !moons[k].infinite && moons[k].amount <= 0) continue;
-        const float d = Dist3(moons[k].pos, st.st.pos);
-        if (d < md) { md = d; moon = static_cast<int>(k); }
+      auto release = [&]() {
+        if (f.fr_moon >= 0 && f.fr_moon < static_cast<int>(moons.size()) && moons[static_cast<size_t>(f.fr_moon)].user == f.id) moons[static_cast<size_t>(f.fr_moon)].user = 0;
+      };
+      auto exhausted = [&](const Moon& m) { return !infinite_moons && !m.infinite && m.amount < 0.01f; };  // 0x42b430: Vorrat unter 0,01
+      // Ziel-Mond: bleibt, bis er erschoepft ist; sonst der naechste vom Frachter aus (0x435010, Radius 100000)
+      if (f.fr_moon >= 0 && (f.fr_moon >= static_cast<int>(moons.size()) || exhausted(moons[static_cast<size_t>(f.fr_moon)]))) { release(); f.fr_moon = -1; }
+      if (f.fr_moon < 0 && f.fr_state != 3 && f.fr_state != 4) {
+        float md = 1e30f;
+        for (size_t k = 0; k < moons.size(); ++k) {
+          if (exhausted(moons[k])) continue;
+          const float d = Dist3(moons[k].pos, f.st.pos);
+          if (d < md && d < 100000.0f) { md = d; f.fr_moon = static_cast<int>(k); }
+        }
       }
       auto go = [&](const float t[3]) {  // Ziel setzen, wenn es sich geaendert hat (has_target bleibt nach der Ankunft gesetzt)
         if (!CanFly(f)) return;
@@ -3091,57 +3100,57 @@ struct Game::Impl {
         if (!f.st.has_target || std::sqrt(dx * dx + dz * dz) > 30.0f) { f.auto_move = 0; SetShipTarget(&f.st, t); }
       };
       const float srad = RadiusOf(st);
-      switch (f.fr_state) {
-        case 0:
-          if (moon >= 0) f.fr_state = f.cargo > 0.5f && f.cargo >= f.cargo_max ? 3 : 1;
-          else if (f.cargo > 0.5f) f.fr_state = 3;
-          break;
-        case 1: {
-          if (moon < 0) { f.fr_state = f.cargo > 0.5f ? 3 : 0; break; }
-          const Moon& m = moons[static_cast<size_t>(moon)];
-          float dx = f.st.pos[0] - m.pos[0], dz = f.st.pos[2] - m.pos[2];
-          const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
-          const float stand = m.radius + 90.0f;   // Strahlreichweite 120 vom Rand
-          if (dl <= stand + 30.0f) { f.fr_state = 2; f.fr_timer = 0; break; }
-          const float tg[3] = {m.pos[0] + dx / dl * stand, 0.0f, m.pos[2] + dz / dl * stand};
-          go(tg);
-          break;
+      const float room = f.cargo_max - f.cargo;
+      if (f.fr_state == 4) {  // angedockt: Entladen mit der Regel der Station (0x45a910); danach wieder von vorn
+        TeamResources& r = Res(f.team);
+        if (r.dilithium < r.dilithium_max && f.cargo > 0) {
+          const float amt = std::min(f.cargo, std::max(1.0f, st.transfer_rate) * dt);
+          f.cargo -= amt;
+          r.AddDilithium(amt);
         }
-        case 2: {
-          if (moon < 0) { f.fr_state = f.cargo > 0.5f ? 3 : 0; break; }
-          Moon& m = moons[static_cast<size_t>(moon)];
-          f.fr_timer += dt;
-          while (f.fr_timer >= 1.5f && f.cargo < f.cargo_max) {  // shotDelay des Strahls
-            f.fr_timer -= 1.5f;
-            const float take = std::min(15.0f, f.cargo_max - f.cargo);  // damageBase
-            const bool inf = infinite_moons || m.infinite;
-            const float got = inf ? take : std::min(take, m.amount);
-            f.cargo += got;
-            if (!inf) m.amount -= got;
-            if (got <= 0) break;
-          }
-          if (f.cargo >= f.cargo_max - 0.01f || (!infinite_moons && !m.infinite && m.amount <= 0)) f.fr_state = 3;
-          break;
-        }
-        case 3: {
-          float dx = f.st.pos[0] - st.st.pos[0], dz = f.st.pos[2] - st.st.pos[2];
-          const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
-          const float stand = srad + std::max(70.0f, st.dock_buffer);  // dockingBuffer
-          if (dl <= stand + 40.0f) { f.fr_state = 4; break; }
-          const float tg[3] = {st.st.pos[0] + dx / dl * stand, 0.0f, st.st.pos[2] + dz / dl * stand};
-          go(tg);
-          break;
-        }
-        case 4: {
-          TeamResources& r = Res(f.team);
-          if (r.dilithium < r.dilithium_max && f.cargo > 0) {
-            const float amt = std::min(f.cargo, std::max(1.0f, st.transfer_rate) * dt);
-            f.cargo -= amt;
-            r.AddDilithium(amt);
-          }
-          if (f.cargo <= 0.001f) { f.cargo = 0; f.fr_state = 0; }
-          break;
-        }
+        if (f.cargo <= 0.001f) { f.cargo = 0; f.fr_state = 0; }
+        continue;
+      }
+      if (f.fr_state == 3) {  // zur Station: andocken
+        float dx = f.st.pos[0] - st.st.pos[0], dz = f.st.pos[2] - st.st.pos[2];
+        const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+        const float stand = srad + std::max(70.0f, st.dock_buffer);  // dockingBuffer
+        if (dl <= stand + 40.0f) { f.fr_state = 4; continue; }
+        const float tg[3] = {st.st.pos[0] + dx / dl * stand, 0.0f, st.st.pos[2] + dz / dl * stand};
+        go(tg);
+        continue;
+      }
+      // Abbau-Zustand (Befehl 24, 0x42b430): voll (Rest unter 0,01) -> abliefern; kein Mond -> abliefern ab 5 Ladung, sonst Leerlauf
+      if (room < 0.01f) { release(); f.fr_state = 3; continue; }
+      if (f.fr_moon < 0) {
+        if (f.cargo > 5.0f) f.fr_state = 3; else f.fr_state = 0;
+        continue;
+      }
+      Moon& m = moons[static_cast<size_t>(f.fr_moon)];
+      float dx = f.st.pos[0] - m.pos[0], dz = f.st.pos[2] - m.pos[2];
+      const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+      // ein Frachter je Mond: ist ein anderer der letzte Nutzer, haelt dieser 30 weiter draussen und schiesst nicht (0x42b6cf)
+      bool other = false;
+      if (m.user != 0 && m.user != f.id) { const int ui = FindById(m.user); other = ui >= 0 && spawned[static_cast<size_t>(ui)].fr_state == 2 && spawned[static_cast<size_t>(ui)].fr_moon == f.fr_moon; }
+      const float hold = m.radius + 100.0f + (other ? 30.0f : 0.0f);   // Strahlreichweite 120 (gminebm) minus Spielraum
+      if (dl > hold + 15.0f || other) {
+        f.fr_state = 1;
+        f.fr_timer = 0;
+        const float tg[3] = {m.pos[0] + dx / dl * hold, 0.0f, m.pos[2] + dz / dl * hold};
+        go(tg);
+        continue;
+      }
+      f.fr_state = 2;
+      f.fr_timer += dt;
+      while (f.fr_timer >= 1.5f && f.cargo < f.cargo_max - 0.01f) {  // shotDelay des Strahls; Treffer: 0x4e0900
+        f.fr_timer -= 1.5f;
+        const bool inf = infinite_moons || m.infinite;
+        // Menge = min(Strahlschaden 15, freier Laderaum, Vorrat des Mondes); der Mond merkt sich den Frachter als Nutzer
+        const float take = std::min(std::min(15.0f, f.cargo_max - f.cargo), inf ? 1e30f : m.amount);
+        f.cargo += take;
+        if (!inf) m.amount -= take;
+        m.user = f.id;
+        if (take <= 0) break;
       }
     }
   }

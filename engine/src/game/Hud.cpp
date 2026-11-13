@@ -238,6 +238,13 @@ void DrawShips(Builder& b, const GuiCfg& c, const std::vector<HudShip>& ships, f
       while (t.size() > 1 && b.TextW(t, th) > q[2] * s) PopUtf8(&t);
       b.Text(t, ix + q[0] * s, iy + q[1] * s, th, r, g, bl);
     };
+    if (sh.dilithium >= 0) {  // Dilithiummond: Name, Drahtgitter (<odf>w5), Vorratsbalken
+      if (R("infoSingleNameTextBackgroundArea", a)) b.Sprite("name_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
+      text("infoSingleNameTextInformationArea", sh.name, 1.0f, 1.0f, 1.0f);
+      if (R("infoSingleDilithiumBarArea", a)) b.SpriteBar("large_dilithium_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.dilithium, 0.0f, 0.5f, 1.0f);
+      if (R("infoSingleWireframeIconArea", a)) b.SpriteBar(sh.wire + "w5", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1.0f, 1, 1, 1);
+      return;
+    }
     text("infoSingleClassTextInformationArea", sh.status.empty() ? sh.cls : sh.cls + "  " + sh.status, 1.0f, 1.0f, 1.0f);
     if (R("infoSingleNameTextBackgroundArea", a)) b.Sprite("name_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
     text("infoSingleNameTextInformationArea", sh.name, 1.0f, 1.0f, 1.0f);
@@ -250,7 +257,9 @@ void DrawShips(Builder& b, const GuiCfg& c, const std::vector<HudShip>& ships, f
     float r, g, bl;
     if (R("infoSingleCrewDotArea", a)) { StateRgb(sh.crew_state, &r, &g, &bl); b.SpriteBar("crew_dot", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, r, g, bl); }
     if (R("infoSingleShieldBarArea", a)) { StateRgb(sh.shield, &r, &g, &bl); b.SpriteBar("large_shield_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.shield, r, g, bl); }
-    if (R("infoSingleEnergyBarArea", a)) {
+    if (sh.construction >= 0 && R("infoSingleConstructionBarArea", a)) {
+      b.SpriteBar("large_construction_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.construction, 1.0f, 0.6f, 0.2f);
+    } else if (R("infoSingleEnergyBarArea", a)) {
       if (sh.energy >= 0) b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.energy, 1, 1, 0);
       else b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, 0.3f, 0.3f, 0.3f);
     }
@@ -464,19 +473,18 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
     // unten rechts das Infofeld, darueber am rechten Rand das Steuerfeld. Das 3D-Bild liegt dazwischen (und dahinter).
     const float res_w = 3.0f * std::max({dil.ok ? dil.area.w : 0.0f, crew.ok ? crew.area.w : 0.0f, off.ok ? off.area.w : 0.0f});
     const float res_h = std::max({dil.ok ? dil.area.h : 0.0f, crew.ok ? crew.area.h : 0.0f, off.ok ? off.area.h : 0.0f});
-    // Die Leiste (Spezialwaffen, Bauwarteschlange) sitzt direkt ueber dem Infofeld, das Steuerfeld darueber.
-    const float top_w = cin_w + res_w, bot_w = mm_w + std::max(info_w, spd_w);
-    const float top_h = std::max(cin_h, res_h), bot_h = std::max(mm_h, info_h + spd_h + ctl_h);
-    s = std::min(W / std::max(top_w, bot_w), 0.46f * H / (top_h + bot_h));
+    const float top_w = cin_w + std::max(spd_w, res_w), bot_w = mm_w + info_w;
+    const float top_h = std::max(cin_h, res_h + spd_h), bot_h = std::max(mm_h, info_h + ctl_h);
+    s = std::min(W / std::max(top_w, bot_w), 0.5f * H / (top_h + bot_h));
     s = std::max(s, 0.5f);
     if (s >= 1.0f) s = std::floor(s * 4.0f) / 4.0f;
     const float bottom = H;
     cin_x = 0; cin_y = 0;
+    spd_x = cin_w * s; spd_y = res_h * s;
     mm_x = 0; mm_y = bottom - mm_h * s;
     info_x = W - info_w * s; info_y = bottom - info_h * s;
-    spd_x = W - spd_w * s; spd_y = info_y - spd_h * s;
-    ctl_x = W - ctl_w * s; ctl_y = spd_y - ctl_h * s;
-    view_y = std::max(cin_h, res_h) * s;
+    ctl_x = W - ctl_w * s; ctl_y = info_y - ctl_h * s;
+    view_y = std::max(cin_h * s, spd_y + spd_h * s);
     bottom_top = std::min(mm_y, ctl_y);
   }
   L.scale = s;

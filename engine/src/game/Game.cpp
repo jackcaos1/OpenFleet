@@ -370,7 +370,8 @@ struct Game::Impl {
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
   };
-  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name; };  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
+  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; };
+  int moon_sel = -1;  // angetippter Dilithiummond (Infofeld), -1 keiner  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
   std::vector<Moon> moons;
   bool infinite_moons = false;
   struct SpawnModel {
@@ -455,6 +456,10 @@ struct Game::Impl {
   float sym_px = 100.0f;  // unterhalb dieses Bildschirmdurchmessers (Pixel) wird das Symbol gezeigt
   MarkerRenderer sel_markers;
   MarkerRenderer build_markers;  // Schweissstrahlen der Bauarbeiter
+  MarkerRenderer grid_markers2;  // Gitterlinien in z-Richtung
+  MarkerRenderer star_near, star_far;  // Sterne zwischen Spielebene und Hintergrund (Tiefenwirkung beim Verschieben)
+  bool grid_ready = false;
+  int star_key = -1;
   MarkerRenderer grid_markers;  // Orientierungsgitter in der Ebene des ausgewaehlten Objekts
   std::vector<SpawnEntry> spawn_list;
   std::vector<std::string> spawn_races;
@@ -617,6 +622,8 @@ struct Game::Impl {
       float hp = 20000.0f;
       if (const OdfObject* od = odf_lib->Get(odf)) od->GetFloat("maxHealth", &hp);
       m.amount = hp;
+      m.amount0 = hp;
+      m.wire = odf.compare(0, 6, "mdmoon") == 0 ? std::string("mdmoon") : odf;
       moons.push_back(m);
     }
   }
@@ -1697,6 +1704,7 @@ struct Game::Impl {
 
   void SelectOnly(int i) {
     for (Spawned& x : spawned) x.sel = false;
+    moon_sel = -1;
     selected = i;
     if (i >= 0 && i < static_cast<int>(spawned.size())) spawned[static_cast<size_t>(i)].sel = true;
     else selected = -1;
@@ -2410,6 +2418,7 @@ struct Game::Impl {
         const Moon& m = moons[static_cast<size_t>(mi)];
         Message(m.name + (m.infinite || infinite_moons ? ": unerschoepflich" : ": Vorrat " + std::to_string(static_cast<int>(m.amount))));
         SelectOnly(-1);
+        moon_sel = mi;
         return;
       }
     }
@@ -3551,6 +3560,11 @@ struct Game::Impl {
       if (o.team < 1 || o.team > n) continue;
       has_objects[static_cast<size_t>(o.team - 1)] = 1;
     }
+    // Im Original geprueft (Nutzer): Startobjekte unbesetzter Plaetze werden nicht erzeugt.
+    for (size_t k = spawned.size(); k-- > 0;) {
+      const int t = spawned[k].team;
+      if (t >= 1 && t <= n && sk_slot[t - 1].kind == 0) { UnstampStation(spawned[k]); spawned.erase(spawned.begin() + static_cast<long>(k)); }
+    }
     for (Spawned& o : spawned) {
       if (o.team < 1 || o.team > n || sk_slot[o.team - 1].kind == 0) continue;
       o.team = sk_slot[o.team - 1].team;
@@ -3753,6 +3767,15 @@ struct Game::Impl {
         h.energy = sp.has_energy ? 1.0f : -1.0f;
         h.shield = sp.hp.shield_frac();
         h.hull = sp.hp.crew_frac();
+        if (sp.bq.active) h.construction = sp.bq.Progress();
+        st.ships.push_back(h);
+      }
+      if (st.ships.empty() && moon_sel >= 0 && moon_sel < static_cast<int>(moons.size())) {  // Dilithiummond im Infofeld
+        const Moon& mo = moons[static_cast<size_t>(moon_sel)];
+        HudShip h;
+        h.name = mo.name;
+        h.wire = mo.wire;
+        h.dilithium = mo.infinite || infinite_moons ? 1.0f : std::max(0.0f, std::min(1.0f, mo.amount / std::max(1.0f, mo.amount0)));
         st.ships.push_back(h);
       }
       if (selected >= 0 && selected < static_cast<int>(spawned.size())) {
@@ -4040,7 +4063,7 @@ bool Game::OnSurfaceCreated() {
   const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
   const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
   FLEET_LOGI("GL: %s | %s", version ? version : "?", renderer ? renderer : "?");
-  impl_->gl_ready = impl_->triangle.Init() && impl_->models.Init() && impl_->sprites.Init() && impl_->markers.Init() && impl_->map_markers.Init() && impl_->sel_markers.Init() && impl_->grid_markers.Init() && impl_->build_markers.Init() && impl_->effects.Init() && impl_->text.Init() && impl_->hud_gl.Init();
+  impl_->gl_ready = impl_->triangle.Init() && impl_->models.Init() && impl_->sprites.Init() && impl_->markers.Init() && impl_->map_markers.Init() && impl_->sel_markers.Init() && impl_->grid_markers.Init() && impl_->grid_markers2.Init() && impl_->star_near.Init() && impl_->star_far.Init() && impl_->build_markers.Init() && impl_->effects.Init() && impl_->text.Init() && impl_->hud_gl.Init();
   impl_->models.SetAlphaMode(impl_->alpha_mode);
   impl_->models.SetTeamColor(kTeamColors[impl_->team_color].rgb[0], kTeamColors[impl_->team_color].rgb[1],
                              kTeamColors[impl_->team_color].rgb[2]);
@@ -4157,7 +4180,11 @@ void Game::OnFrame(double dt) {
       glClear(GL_DEPTH_BUFFER_BIT);
     }
     const Mat4 view = Mat4::Translation(0, 0, -dist) * rot * Mat4::Translation(-s.map_target[0], -s.map_target[1], -s.map_target[2]);
-    const Mat4 proj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + 14000.0f);
+    float far_d = dist + 14000.0f;  // das Gitter wird mit Tiefentest nach den Objekten gezeichnet (Original) und braucht dieselbe Projektion: Sichtweite ueber die Kartendiagonale hinaus
+    if (s.map_loaded && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4])
+      far_d = dist + std::max(14000.0f, 1.5f * std::hypot(s.map.bounds[1] - s.map.bounds[0], s.map.bounds[5] - s.map.bounds[4]));
+    const Mat4 proj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), far_d);
+    s.grid_ready = false;
     if (s.grid_visible && s.map_loaded && s.map_current >= 0 && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {
       // Original (docs/formats/gui-grid.md): Terrain-Objekt zeichnet Linien in der Ebene y = 0 ueber die Kartengrenzen des Kopfes, Zelle 100
       // (Global 0x631cdc), Linienanfang an der Kartengrenze (nicht an Vielfachen von 100), Farbe ist NICHT belegt (siehe Doku), hier ein helles Grau als Schaetzung.
@@ -4166,7 +4193,7 @@ void Game::OnFrame(double dt) {
       const int nx = static_cast<int>((x1 - x0) / cell), nz = static_cast<int>((z1 - z0) / cell);
       std::vector<MarkerRenderer::Marker> gm, gz;
       MarkerRenderer::Marker m;
-      m.color[0] = 0.149f; m.color[1] = 0.128f; m.color[2] = 0.0f;
+      m.color[0] = 0.60f; m.color[1] = 0.46f; m.color[2] = 0.05f;  // im Original deutlich heller (Nutzer, Screenshot): Orange-Gelb
       m.pos[1] = 0.0f;
       for (int i = 0; i <= nx; ++i) {  // Linien konstanten x, von z0 bis z1
         m.pos[0] = x0 + cell * static_cast<float>(i); m.pos[2] = -z0;
@@ -4181,12 +4208,9 @@ void Game::OnFrame(double dt) {
       // Marker haben eine einheitliche Laenge: beide Richtungen getrennt zeichnen
       // Abweichung vom Original (Sichtweite 10000, Entscheidung des Projektinhabers): wir zoomen weiter heraus, das Gitter soll immer ganz
       // sichtbar sein; die hintere Ebene reicht deshalb bis ueber die Kartendiagonale hinaus.
-      const float diag = std::sqrt((x1 - x0) * (x1 - x0) + (z1 - z0) * (z1 - z0));
-      const Mat4 gproj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + std::max(14000.0f, 1.5f * diag));
       s.grid_markers.Set(gm, z1 - z0);
-      s.grid_markers.Draw(gproj * view, 1.0f);
-      s.grid_markers.Set(gz, x1 - x0);
-      s.grid_markers.Draw(gproj * view, 1.0f);
+      s.grid_markers2.Set(gz, x1 - x0);
+      s.grid_ready = true;
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
@@ -4241,6 +4265,34 @@ void Game::OnFrame(double dt) {
       it->second.r->SetTeamColor(c[0], c[1], c[2]);
       it->second.r->Draw(proj * view * m, rot * r, &m);
       if (it->second.sp) it->second.sp->Draw(proj, view * m, s.clock);
+    }
+    if (s.map_loaded && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {  // Einzelne Sterne zwischen Spielebene und Hintergrund: Tiefenwirkung beim Verschieben (Nutzerwunsch)
+      if (s.star_key != s.map_current + 1000) {
+        s.star_key = s.map_current + 1000;
+        unsigned seed = 12345u + static_cast<unsigned>(s.map_current + 7) * 7919u;
+        auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return static_cast<float>(seed >> 8) / 16777216.0f; };
+        const float bx0 = s.map.bounds[0] - 4000.0f, bx1 = s.map.bounds[1] + 4000.0f, bz0 = -s.map.bounds[5] - 4000.0f, bz1 = -s.map.bounds[4] + 4000.0f;
+        std::vector<MarkerRenderer::Marker> nearv, farv;
+        for (int i = 0; i < 2200; ++i) {
+          MarkerRenderer::Marker m;
+          const bool near_layer = i < 500;
+          m.pos[0] = bx0 + rnd() * (bx1 - bx0);
+          m.pos[2] = bz0 + rnd() * (bz1 - bz0);
+          m.pos[1] = near_layer ? -(600.0f + rnd() * 2400.0f) : -(3200.0f + rnd() * 6000.0f);
+          const float b = 0.35f + 0.65f * rnd();
+          m.color[0] = b; m.color[1] = b; m.color[2] = std::min(1.0f, b * 1.1f);
+          m.dir[0] = m.dir[1] = m.dir[2] = 0;
+          (near_layer ? nearv : farv).push_back(m);
+        }
+        s.star_near.Set(nearv, 0.0f);
+        s.star_far.Set(farv, 0.0f);
+      }
+      s.star_far.Draw(proj * view, 1.5f, true);
+      s.star_near.Draw(proj * view, 2.5f, true);
+    }
+    if (s.grid_ready) {  // Gitter nach den Objekten, mit Tiefentest: vor Dahinterliegendem, hinter Davorliegendem
+      s.grid_markers.Draw(proj * view, 1.0f, true);
+      s.grid_markers2.Draw(proj * view, 1.0f, true);
     }
     {  // Bau-Animation (Nutzerwunsch; Annahme, das Original (BuildingEffect, WorkerBee) ist nicht nachgebaut): wachsende Station am Bauplatz, sechs Arbeiter kreisen und schweissen
       std::vector<MarkerRenderer::Marker> beams;
@@ -4370,6 +4422,19 @@ void Game::OnFrame(double dt) {
         dr.push_back(d);
       };
       // Schildbalken und Besatzungspunkt zu einem Bildschirmrechteck (x0, y0, x1, y1) eines Schiffs oder Symbols
+      auto free_bar = [&](float x, float y, float w, float h, float frac, float r, float g, float b) {
+        for (int k = 0; k < 2; ++k) {
+          HudDraw d;
+          float uv[4];
+          bool add = false;
+          const float f = k == 0 ? 1.0f : std::max(0.0f, std::min(1.0f, frac));
+          if (s.hud_data.Sprite("select_shield_bar", &d.tex, uv, &add)) { d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[0] + (uv[2] - uv[0]) * f; d.v1 = uv[3]; }
+          d.x = x; d.y = y; d.w = w * f; d.h = h;
+          d.rgba[0] = k == 0 ? 0.2f : r; d.rgba[1] = k == 0 ? 0.2f : g; d.rgba[2] = k == 0 ? 0.2f : b; d.rgba[3] = 1.0f;
+          d.additive = true;
+          dr.push_back(d);
+        }
+      };
       auto ship_bars = [&](const Impl::Spawned& sp, float x0, float y0, float x1, float y1) {
         const float ps = std::max(1.0f, std::min(W / 640.0f, H / 480.0f));  // das Original rechnet in Pixeln eines 640 x 480-Fensters
         const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
@@ -4388,10 +4453,6 @@ void Game::OnFrame(double dt) {
           d.additive = true;
           dr.push_back(d);
         };
-        if (sp.bq.active) {  // Baufortschritt (Nutzerwunsch): blauer Balken unter dem Schildbalken
-          bar(bx, by + bh + ps, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
-          bar(bx, by + bh + ps, bw, bh, sp.bq.Progress(), 0.1f, 0.5f, 1.0f);
-        }
         if (sp.hp.shield_max > 0.1f) {
           const float f = std::max(0.0f, std::min(1.0f, sp.hp.shield / sp.hp.shield_max));
           bar(bx, by, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
@@ -4450,6 +4511,7 @@ void Game::OnFrame(double dt) {
           }
           if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->bq.active || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
             ship_bars(*sy.ship, px - 0.7f * sz, py - 0.7f * sz, px + 0.7f * sz, py + 0.7f * sz);
+          if (sy.ship && sy.ship->bq.active) free_bar(px - 0.7f * sz, py + 0.7f * sz + 3.0f, 1.4f * sz, 4.0f, sy.ship->bq.Progress(), 1.0f, 0.6f, 0.2f);  // Baufortschritt unter dem Symbol (Farbe der Original-Baubalken)
         } else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
           static const char* kIcon[4] = {"federation_icon", "klingon_icon", "romulan_icon", "borg_icon"};
           const char ch = sy.wire.empty() ? 'f' : sy.wire[0];
@@ -4473,8 +4535,24 @@ void Game::OnFrame(double dt) {
           }
         }
       }
+      for (const Impl::Moon& mo : s.moons) {  // Zoomout (Nutzerwunsch): Dilithiummonde als Drahtgitter-Symbol mit Vorratsbalken wie im Infofeld
+        if (!sym_small(mo.pos, mo.radius)) continue;
+        float px, py, pw;
+        if (!project(mo.pos, &px, &py, &pw)) continue;
+        const float sz = 0.0225f * H;
+        HudDraw d;
+        float uv[4];
+        bool add = false;
+        if (!s.hud_data.Sprite((mo.wire + "w5").c_str(), &d.tex, uv, &add)) continue;
+        d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+        d.additive = add;
+        d.x = px - 0.7f * sz; d.y = py - 0.7f * sz; d.w = 1.4f * sz; d.h = 1.4f * sz;
+        d.rgba[0] = 0.6f; d.rgba[1] = 0.8f; d.rgba[2] = 1.0f; d.rgba[3] = 1.0f;
+        dr.push_back(d);
+        free_bar(px - 0.7f * sz, py + 0.7f * sz + 3.0f, 1.4f * sz, 4.0f, mo.infinite || s.infinite_moons ? 1.0f : mo.amount / std::max(1.0f, mo.amount0), 0.0f, 0.5f, 1.0f);
+      }
       for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
-        if (sp.derelict || (!sp.sel && !sp.bq.active && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
+        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
         if (it == s.spawn_models.end()) continue;
         if (sym_small(sp.st.pos, it->second.radius * sp.scale)) continue;  // Symbolansicht zeichnet die Balken selbst

@@ -23,7 +23,7 @@ const std::vector<SkOptDef>& SkOptDefs() {
       {kOptDirectors, 524, 372, 111, 20, true, {"directors_on", "directors_off"}},
       {kOptHideMinimap, 385, 295, 128, 20, true, {"hide_minimap_on", "hide_minimap_off"}},
       {kOptFixedPlacement, 385, 318, 128, 20, true, {"fixed_placement_on", "fixed_placement_off"}},
-      {kOptVisibility, 385, 341, 128, 20, false, {"show_all", "show_available", "show_allies", "show_none"}},
+      {kOptVisibility, 385, 341, 128, 20, false, {"show_all", "show_none"}},
       {kOptShroudFog, 385, 364, 128, 20, false, {"shroud_fog_on_on", "shroud_fog_off_on", "shroud_fog_on_off", "shroud_fog_off_off"}},
   };
   return k;
@@ -39,7 +39,7 @@ SkirmishSettings::SkirmishSettings() {
   v[kOptFerengi] = 1;
   v[kOptHideMinimap] = 1;  // +0x53 = 1 -> Zustand 1 = zweiter Text (hide_minimap_off, "Minimap Hidden"; Zustand 0 = erster registrierter Text, 0x525330)
   v[kOptGameType] = -1;  // Vorgabe +0x78 = 2 (ladder) ist nicht in der Liste: das Feld bleibt leer (0x539e01)
-  v[kOptVisibility] = 3;
+  v[kOptVisibility] = 0;  // im Original geprueft (Nutzer): Vorgabe "show all", die Liste enthaelt nur show all und show none
 }
 
 std::string SkOptText(const LabelMap& labels, const SkirmishSettings& s, SkOpt opt) {

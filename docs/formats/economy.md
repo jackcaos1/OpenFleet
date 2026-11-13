@@ -59,3 +59,10 @@ Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew
 - Whether the `officerCost` return on completion is the complete officer rule: the executable shows no second deduction, but the object creation (0x46b590) was not read completely.
 - Placement of the new craft (output queue, 0x46eac0 / spline queue), the shipyard animation, the worker bee scaffold.
 - The AI accounting (0x41cfa0 / 0x41d090 subtract the same three costs from a planning budget).
+
+## Construction animation (partly read, NOT implemented like the original)
+- `ConstructionRig` start (0x457b80): creates the worker bees through the bee manager (global 0x67f6d0, class `WorkerBee`, create function 0x518ea0), the number from class field +0x550
+  (`numberOfWorkerBees`, 6 in const.odf). Bee i starts at the hardpoint named by entry i of the class's name list (+0x55c, helper 0x457f70; falls back to the root node).
+  Each bee gets a 0xb8-byte record built by 0x519010 and registered with 0x5194a0 (manager 0x67f6c0). The per-frame bee behaviour is 0x518250 (about 860 lines, not read).
+- The placeholder object (`mconstph.odf`, class `constPlaceholder`, `is_starbase`, footprint) is created at the build hardpoint transform; `BuildingEffect` manager (global 0x67f4a8, update 0x50c950 / 0x50caa0) draws the growing structure; both not read.
+- Client build 95/96 shows an invented version (growing model, six orbiting bees, beams). A faithful port needs its own session.

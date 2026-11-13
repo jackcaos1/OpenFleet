@@ -43,6 +43,8 @@ struct HudShip {
   float system[5] = {1, 1, 1, 1, 1};  // Schilde, Antrieb, Lebenserhaltung, Sensoren, Waffen
   float crew_state = 1;               // 1 gruen, 0,5 gelb, 0 rot
   float hull = 1;                     // Huelle 0..1 (faerbt das Drahtgitter)
+  float construction = -1;            // >= 0: Baufortschritt, ersetzt die Energieanzeige (infoSingleConstructionBar)
+  float dilithium = -1;               // >= 0: Dilithiummond, Vorrat 0..1 (infoSingleDilithiumBar); nur Name, Drahtgitter und Balken
 };
 
 struct HudState {

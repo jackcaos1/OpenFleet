@@ -37,3 +37,16 @@ Things that could not be settled from the executable or the data files. Add a re
 - Construction animation: client invention (growing model, six orbiting worker bees from `workerBeeName`, beams). Original classes: `BuildingEffect`, `WorkerBee`, `mconstph.odf` placeholder, `weldingRadius`, `timeUntilClosure`. Compare look and duration; yards show nothing yet.
 - Dilithium moon glow: nodes `oreglow` / `dmooninf` (lights.spr, animated colour) were hidden inside the sphere by the depth test; client lifts them 60 units towards the camera. Check how the original shows the glow.
 - Moon info on tap (name, supply) is client design; the original may select moons like other objects.
+
+## Results of the user's test in the original (13.11.2026)
+- Eight small plates under the player rows = **team colour chooser** (not implemented in the client yet).
+- Visibility field: default **show all**, the list only has show all and show none (client changed, build 96).
+- Instant action, Borg, minimal units on 4first: only one Assembler (= `bconst`, matches `minimalUnits1`). Verified.
+- "Map units": the map decides the race by position (start objects keep their race). Matches the client.
+- Start objects of unoccupied slots are **not created** (client changed, build 96).
+- Default "Minimap Hidden": confirmed. Popup placement fine; the popup height could follow the screen size (open).
+- Grid: **much brighter** in the original (orange-yellow, screenshot) and depth tested: in front of objects behind it, behind objects in front of it (client changed, build 96).
+- Ship names appear only in the info panel and tooltips (client has no names in the field: matches).
+- Ready lamps: still open.
+- Extra observation: single stars between the play plane and the background give depth when scrolling (added, build 96).
+- Info panel (gui_*.cfg): `infoSingleConstructionBar` at the energy bar position (38, 86, 48 x 5, colour 1 / 0.6 / 0.2, sprite `large_construction_bar`) and `infoSingleDilithiumBar` (37, 86, 49 x 5, colour 0 / 0.5 / 1, `large_dilithium_bar`): used for construction progress and dilithium moons. Moon wireframe sprites `mdmoonw1..5`, `mmooninfw1..5` exist in gui_global.spr. Build 96 uses them. What else the original moon panel shows is open.

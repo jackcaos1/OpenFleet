@@ -104,16 +104,18 @@ void MarkerRenderer::Set(const std::vector<Marker>& markers, float line_length) 
   glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
 }
 
-void MarkerRenderer::Draw(const Mat4& mvp, float point_size_px) const {
+void MarkerRenderer::Draw(const Mat4& mvp, float point_size_px, bool depth_test) const {
   if (!program_ || point_count_ == 0) return;
   glUseProgram(program_);
   glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, mvp.m);
   glUniform1f(u_size_, point_size_px);
-  glDisable(GL_DEPTH_TEST);
+  if (depth_test) glEnable(GL_DEPTH_TEST);
+  else glDisable(GL_DEPTH_TEST);
   glBindVertexArray(vao_);
   glDrawArrays(GL_POINTS, 0, point_count_);
   glDrawArrays(GL_LINES, point_count_, point_count_ * 2);
   glBindVertexArray(0);
+  glDisable(GL_DEPTH_TEST);
 }
 
 }  // namespace fleet

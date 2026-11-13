@@ -2967,7 +2967,11 @@ struct Game::Impl {
         const float d = Dist3(moons[k].pos, st.st.pos);
         if (d < md) { md = d; moon = static_cast<int>(k); }
       }
-      auto go = [&](const float target[3]) { if (CanFly(f) && !f.st.has_target) { f.auto_move = 0; SetShipTarget(&f.st, target); } };
+      auto go = [&](const float t[3]) {  // Ziel setzen, wenn es sich geaendert hat (has_target bleibt nach der Ankunft gesetzt)
+        if (!CanFly(f)) return;
+        const float dx = f.st.target[0] - t[0], dz = f.st.target[2] - t[2];
+        if (!f.st.has_target || std::sqrt(dx * dx + dz * dz) > 30.0f) { f.auto_move = 0; SetShipTarget(&f.st, t); }
+      };
       const float srad = RadiusOf(st);
       switch (f.fr_state) {
         case 0:
@@ -3031,6 +3035,8 @@ struct Game::Impl {
     std::vector<int> targets;
     BuildPlanner planner;
     double build_timer = 0, strat_timer = 0, stall = 0;
+    int site_fail = 0;  // Bauplaetze, die ein Bauschiff nicht erreichen konnte (verschiebt die naechste Suche)
+    std::map<unsigned, double> rig_wait;  // Bauschiff -> Sekunden ohne Ziel auf dem Weg zum Bauplatz
   };
   std::vector<AiTeam> ai_teams;
 
@@ -3112,6 +3118,11 @@ struct Game::Impl {
       for (const Spawned& o : spawned)
         if (o.team == a.team && o.mining_stn && !o.dying && ++seen == e.base) { c[0] = o.st.pos[0]; c[2] = o.st.pos[2]; break; }
     }
+    if (a.site_fail > 0) {  // frueherer Platz war nicht erreichbar: Suche an anderer Stelle beginnen
+      const float ang = static_cast<float>(a.site_fail) * 2.4f, rr = 350.0f * static_cast<float>(a.site_fail);
+      c[0] += std::cos(ang) * rr;
+      c[2] += std::sin(ang) * rr;
+    }
     float x = c[0], z = -c[2];
     SkSpiralPlace(x, z,
                   [&](float px, float pz) {
@@ -3131,11 +3142,48 @@ struct Game::Impl {
 
   void AiBuildStep(AiTeam& a) {
     if (!odf_lib) return;
+    // Bauschiffe, die ihr Ziel verloren haben (kein Weg), geben den Bauplatz auf
+    for (Spawned& o : spawned) {
+      if (o.team != a.team || !o.movable || !o.has_site || o.bq.active || !o.bq.items.empty()) continue;
+      const float dx = o.st.pos[0] - o.site[0], dz = o.st.pos[2] - o.site[2];
+      if (std::sqrt(dx * dx + dz * dz) < 150.0f || o.st.has_target) { a.rig_wait[o.id] = 0; continue; }
+      a.rig_wait[o.id] += 2.0;
+      if (a.rig_wait[o.id] >= 6.0) { o.has_site = false; a.rig_wait[o.id] = 0; ++a.site_fail; }
+    }
+    // Wirtschaft sichern (Kommentar der Bauliste: "two freighters for each" Bergbaustation): fehlende Frachter nachbauen, auch wenn der Plan weiter ist
+    {
+      int mines = 0, freight = 0;
+      std::string fr_odf;
+      for (const Spawned& o : spawned) {
+        if (o.team != a.team || o.dying || !o.hp.alive()) continue;
+        if (o.mining_stn) ++mines;
+        if (o.freighter) ++freight;
+        for (const QueueItem& q : o.bq.items) {
+          UnitDef qu;
+          if (odf_lib && LoadUnitDef(*odf_lib, q.odf, &qu)) for (const WeaponSlot& ws : qu.weapons) if (ToLowerAscii(ws.odf).find("minebm") != std::string::npos) { ++freight; break; }
+        }
+      }
+      if (mines > 0 && freight < 2 * mines) {
+        for (Spawned& o : spawned) {
+          if (o.team != a.team || o.dying || !o.hp.alive() || o.movable || o.bq.Size() >= 1) continue;
+          for (const std::string& bi : o.build_items) {
+            UnitDef bu;
+            bool is_fr = false;
+            if (LoadUnitDef(*odf_lib, bi, &bu)) for (const WeaponSlot& ws : bu.weapons) if (ToLowerAscii(ws.odf).find("minebm") != std::string::npos) is_fr = true;
+            if (!is_fr) continue;
+            QueueItem it;
+            it.odf = bi;
+            it.cost = CostOf(bi, a.team);
+            if (CanStart(Res(a.team), it.cost) == StartResult::Ok) { o.bq.Enqueue(it); return; }
+          }
+        }
+      }
+    }
     AipElement e;
     UnitDef u;
     while (a.planner.Peek(&e)) {
       if (!LoadUnitDef(*odf_lib, e.unit, &u)) { a.planner.Skip(); continue; }
-      if (CountOwned(a.team, e.unit, true) >= a.targets[a.planner.Index()]) { a.planner.Skip(); a.stall = 0; continue; }
+      if (CountOwned(a.team, e.unit, true) >= a.targets[a.planner.Index()]) { a.planner.Skip(); a.stall = 0; a.site_fail = 0; continue; }
       break;
     }
     if (!a.planner.Peek(&e)) return;
@@ -3154,7 +3202,7 @@ struct Game::Impl {
     }
     if (prod < 0) {
       a.stall += 2.0;
-      if (a.stall > 90.0) { a.planner.Skip(); a.stall = 0; }  // nichts kann das bauen (z. B. fehlende Forschung): naechster Schritt
+      if (a.stall > 400.0) { a.planner.Skip(); a.stall = 0; }  // nichts kann das bauen (z. B. fehlende Forschung): naechster Schritt
       return;
     }
     a.stall = 0;
@@ -4495,6 +4543,30 @@ std::string Game::DebugReport() const {
       else ++ships;
     }
     if (ships + stations + freighters + armed == 0) continue;
+    for (const Impl::Spawned& o : s.spawned)
+      if (o.team == t && o.freighter && !o.dying) {
+        std::snprintf(buf, sizeof buf, "  freighter %u state %d cargo %.0f pos (%.0f,%.0f) target %d speed %.1f\n", o.id, o.fr_state, o.cargo, o.st.pos[0], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.speed);
+        out += buf;
+      }
+    for (const Impl::Spawned& o : s.spawned)
+      if (o.team == t && (o.mining_stn || o.starbase_cls) && !o.dying) {
+        std::snprintf(buf, sizeof buf, "  %s %u pos (%.0f,%.0f) queue %zu active %d\n", o.odf.c_str(), o.id, o.st.pos[0], o.st.pos[2], o.bq.Size(), o.bq.active ? 1 : 0);
+        out += buf;
+      }
+    for (const Impl::AiTeam& a : s.ai_teams)
+      if (a.team == t) {
+        AipElement e;
+        const bool more = a.planner.Peek(&e);
+        std::snprintf(buf, sizeof buf, "  AI step %zu/%zu next %s stall %.0f\n", a.planner.Index(), a.list.size(), more ? e.unit.c_str() : "(done)", a.stall);
+        out += buf;
+        for (const Impl::Spawned& o : s.spawned)
+          if (o.team == t && !o.build_items.empty() && !o.dying) {
+            std::snprintf(buf, sizeof buf, "    producer %s id %u movable %d has_site %d (%s %.0f,%.0f) pos %.0f,%.0f tgt %d (%.0f,%.0f) speed %.1f queue %zu\n", o.odf.c_str(), o.id, o.movable ? 1 : 0, o.has_site ? 1 : 0,
+                          o.site_odf.c_str(), o.site[0], o.site[2], o.st.pos[0], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.target[0], o.st.target[2], o.st.speed, o.bq.Size());
+            out += buf;
+          }
+      }
+    for (const Impl::Moon& m : s.moons) { std::snprintf(buf, sizeof buf, "  moon (%.0f,%.0f) r %.0f amount %.0f\n", m.pos[0], m.pos[2], m.radius, m.amount); if (t == 1) out += buf; }
     const TeamResources& r = s.team_res[t];
     std::snprintf(buf, sizeof buf, "team %d: dil %.0f crew %.0f off %d | stations %d freighters %d warships %d other %d\n", t, r.dilithium, r.crew, r.officers, stations, freighters, armed, ships);
     out += buf;

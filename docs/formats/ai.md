@@ -16,7 +16,7 @@
 - **Build order:** each list entry names a unit and a count. `units_to_build` is read as a running total (**assumption**): the n-th occurrence of a name means "have n of these".
   An entry is done when the team owns or has queued that many; this makes the lists usable on maps that start with a base. The AI looks every 2 s: it finds a producer that has the unit
   in its `buildItem` list (construction ship for stations, yards and the starbase for ships, research stations for pods), waits until the three costs can be paid (the executable's
-  check, `CanStart`), then queues the unit. At most two queued per fixed producer. An entry no producer can build is skipped after 90 s.
+  check, `CanStart`), then queues the unit. At most two queued per fixed producer. An entry no producer can build is skipped after 400 s. A construction ship that loses its target on the way (no path) gives the site up and the next search starts elsewhere.
 - **Station sites** (**own design**, the original places them through `base_num` in the DLL): mining stations next to the n-th moon (n = `base_num`, nearest to the first starbase first), turrets next to
   the n-th mining station, everything else on the start spiral around the first starbase. The construction ship flies there and pays when it arrives (verified rule, economy.md).
 - **Strategy** every 6 s, after `Scheduler_README.txt`: 400 unit grid; goals Attack Base (cell with enemy stations), Attack (threat, no stations) and Defend (own station and threat); raw priority =

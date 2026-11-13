@@ -3535,7 +3535,22 @@ void Game::OnFrame(double dt) {
           dr.push_back(d);
         };
         if (s.sym_mode == 2) {
-          for (int i = 1; i <= 5; ++i) put(sy.wire + "w" + std::to_string(i), px, py, sz * 1.4f, sz * 1.4f, 1.0f);
+          for (int i = 1; i <= 5; ++i) {
+            // Systemzustand wie im Infofeld (Teil i <-> System i, Zuordnung dort ebenfalls angenommen): unbeschaedigt Teamfarbe, beschaedigt gelb, ausgefallen rot
+            float sv = 1.0f;
+            if (sy.ship && sy.ship->hp.sys[i - 1].max_points > 0) sv = sy.ship->hp.sys_frac(i - 1);
+            const float* tc = kMapTeamColors[sy.team >= 0 && sy.team < 9 ? sy.team : 0];
+            const float col[3] = {sv <= 0.0f ? 1.0f : (sv < 1.0f ? 1.0f : tc[0]), sv <= 0.0f ? 0.2f : (sv < 1.0f ? 0.9f : tc[1]), sv <= 0.0f ? 0.2f : (sv < 1.0f ? 0.2f : tc[2])};
+            HudDraw d;
+            float uv[4];
+            bool add = false;
+            if (!s.hud_data.Sprite((sy.wire + "w" + std::to_string(i)).c_str(), &d.tex, uv, &add)) continue;
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = add;
+            d.x = px - 0.7f * sz; d.y = py - 0.7f * sz; d.w = 1.4f * sz; d.h = 1.4f * sz;
+            d.rgba[0] = col[0]; d.rgba[1] = col[1]; d.rgba[2] = col[2]; d.rgba[3] = 1.0f;
+            dr.push_back(d);
+          }
           if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
             ship_bars(*sy.ship, px - 0.7f * sz, py - 0.7f * sz, px + 0.7f * sz, py + 0.7f * sz);
         } else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse

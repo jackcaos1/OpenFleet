@@ -78,6 +78,9 @@ struct UnitDef {
   std::string class_label;  // wingman = Schiff, starbase/shipyard/... = Gebaeude
   std::string unit_name, tooltip, verbose_tooltip, race;
   float build_time = 0;
+  int officer_gain = 0;                     // officerGain: Starbase / Upgrade erhoehen die Offiziersgrenze (docs/formats/economy.md)
+  float dilithium_transfer_rate = 0;       // Bergbaustation: Dilithium je Sekunde
+  std::vector<std::string> build_items;    // buildItem0..9: was dieses Objekt bauen kann (ODF-Namen)
   int officer_cost = 0, crew_cost = 0, dilithium_cost = 0;
   float max_health = 0, shield_rate = 0, shield_delay = 0;
   float max_special_energy = 0, special_energy_rate = 0;
@@ -93,6 +96,7 @@ struct UnitDef {
 };
 
 struct RaceDef {
+  float crew_accumulation_rate = 0.0f, planet_crew_modifier = 1.0f;  // Besatzungszuwachs je Sternbasis (crewAccumulationRate)
   float repair_strength = 1.0f, crew_yellow = 0.4f, crew_red = 0.2f, repair_yellow = 1.5f, repair_red = 2.0f, weapon_yellow = 1.0f, weapon_red = 2.0f, boarding_strength = 1.0f;
   // Startobjekte je Einstellung "Standardeinheiten" (Armada.exe 0x442fd0): minimalUnits1..9, standardUnits1..9, superUnits1..9 (ODF-Namen)
   std::vector<std::string> minimal_units, standard_units, super_units;

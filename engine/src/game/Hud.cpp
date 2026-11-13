@@ -492,7 +492,8 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
       if (c.Rect(n + "IconArea", ia)) b.Sprite(c.Str(n + "Icon"), x + ia[0] * st, ia[1] * st, ia[2] * st, ia[3] * st);
       if (c.Rect(n + "TextArea", ta)) {
         const float th = ta[3] * st * 0.85f;
-        b.Text(vals[i], x + ta[0] * st, ta[1] * st + 0.5f * (ta[3] * st - th), th, 1.0f, 0.8f, 0.2f);
+        const std::string v = state.res[i] >= 0 ? std::to_string(state.res[i]) : std::string(vals[i]);
+        b.Text(v.c_str(), x + ta[0] * st, ta[1] * st + 0.5f * (ta[3] * st - th), th, 1.0f, 0.8f, 0.2f);
       }
     }
   }

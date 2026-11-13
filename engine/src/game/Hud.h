@@ -55,6 +55,7 @@ struct HudState {
   float view_quad[8] = {0};
   std::vector<HudDot> dots;           // Punkte der Minikarte
   std::string race_label;             // Beschriftung der Rassen-Taste
+  int res[3] = {-1, -1, -1};          // Dilithium, Besatzung, Offiziere des eigenen Teams (-1: Platzhalter)
 };
 
 // Ein gezeichnetes Rechteck in Bildschirmpixeln (Ursprung oben links). tex leer = einfarbige Flaeche (rgba).

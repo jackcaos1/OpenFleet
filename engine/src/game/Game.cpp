@@ -37,6 +37,7 @@
 #include "game/Boarding.h"
 #include "game/Cinematic.h"
 #include "game/Combat.h"
+#include "game/Economy.h"
 #include "game/Shockwave.h"
 #include "game/Skirmish.h"
 #include "formats/LabelMap.h"
@@ -350,6 +351,16 @@ struct Game::Impl {
     bool sel = false;  // gehoert zur Auswahl (selected = Hauptobjekt fuer Info/Befehlsleiste)
     int alert = 2;  // 0 gruen, 1 gelb, 2 rot (Standard), 3 Abwarten
     std::vector<std::pair<std::string, std::string>> specials;  // Waffen-ODF, Anzeigename
+    // Bauen (docs/formats/economy.md)
+    BuildQueue bq;                          // Warteschlange: Werft, Basis (Schiffe) und Bauschiff (ein Eintrag am Bauplatz)
+    std::vector<std::string> build_items;   // buildItem0..9
+    int officer_gain = 0;                   // officerGain (Sternbasis / Upgrade)
+    bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
+    float crew_rate = 0, crew_planet = 1.0f;
+    bool has_site = false;                  // Bauschiff: Baustelle gewaehlt
+    float site[3] = {0, 0, 0};
+    std::string site_odf;                   // was dort gebaut werden soll
+    int placed = 0;                         // Zaehler der fertigen Schiffe (Ausgabeplatz)
   };
   struct SpawnModel {
     std::unique_ptr<ModelRenderer> r;
@@ -366,7 +377,8 @@ struct Game::Impl {
     std::string label, key;
   };
   enum class MenuKind { None, Spawn, Maps, Options, Advanced, Debug };
-  enum class CmdPage { Main, Orders };
+  enum class CmdPage { Main, Orders, Build };
+  std::string build_armed;  // Bauschiff: Objekt, dessen Bauplatz als naechstes angetippt wird
   CmdPage cmd_page = CmdPage::Main;
   bool move_armed = false;
   bool attack_armed = false;
@@ -437,6 +449,22 @@ struct Game::Impl {
   int menu_scroll = 0;
   int menu_hot = -1;  // Zeile unter dem Finger
   float menu_drag = 0;
+
+  // Wirtschaft (docs/formats/economy.md): je Team ein Ressourcendatensatz (Armada.exe 0x448d50), Kostenfaktor je Platzart (0x46bbf0)
+  TeamResources team_res[9];
+  AiLevel team_ai[9] = {};
+  bool game_type_set = false;
+  CostRates cost_rates;
+
+  TeamResources& Res(int team) { return team_res[team >= 0 && team < 9 ? team : 0]; }
+  BuildCost CostOf(const std::string& odf, int team) {
+    UnitDef u;
+    if (!odf_lib || !LoadUnitDef(*odf_lib, odf, &u)) return BuildCost();
+    return ScaleCost(u.dilithium_cost, u.officer_cost, u.crew_cost, u.build_time, CostFactor(team_ai[team >= 0 && team < 9 ? team : 0], game_type_set, cost_rates));
+  }
+  // Craft::SetOwner (0x46e030) zieht die Offizierskosten ab, die Zerstoerung (0x46e820) gibt sie zurueck.
+  void OwnerGain(const Spawned& s) { if (s.team > 0 && s.team < 9) Res(s.team).AddOfficers(-s.officers); }
+  void OwnerLose(const Spawned& s) { if (s.team > 0 && s.team < 9) Res(s.team).AddOfficers(s.officers); }
 
   void ClearMap() {
     spawned.clear();
@@ -702,6 +730,11 @@ struct Game::Impl {
     if (val("SHIELD_DAMAGE_PROTECTION", &f)) cc.shield_damage_protection = f;
     if (val("EASY_DAMAGE", &f)) cc.easy_damage = f;
     if (val("HARD_DAMAGE", &f)) cc.hard_damage = f;
+    if (val("MEDIUM_AI_COST_AND_SPEED_HANDICAP", &f)) cost_rates.medium = f;
+    if (val("HARD_AI_COST_AND_SPEED_HANDICAP", &f)) cost_rates.hard = f;
+    if (val("cfgMaxDilithium", &f)) for (TeamResources& r : team_res) r.dilithium_max = f;
+    if (val("cfgMaxOfficers", &f)) for (TeamResources& r : team_res) r.officers_max = static_cast<int>(f);
+    if (val("cfgMaxCrew", &f)) for (TeamResources& r : team_res) r.crew_max = f;
   }
 
   void BuildStars() {
@@ -1356,6 +1389,9 @@ struct Game::Impl {
     if (!odf_lib || !LoadUnitDef(*odf_lib, odf, &u)) return;
     if (!u.unit_name.empty()) s->label = u.unit_name;
     s->officers = u.officer_cost;
+    s->build_items = u.build_items;
+    s->officer_gain = u.officer_gain;
+    s->starbase_cls = u.class_label == "starbase";
     s->has_energy = u.max_special_energy > 0;
     s->hero = u.is_hero;
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
@@ -1378,6 +1414,8 @@ struct Game::Impl {
       q.crew_max = static_cast<float>(u.crew_cost);
       RaceDef rd;
       LoadRaceDef(*odf_lib, u.race, &rd);
+      s->crew_rate = rd.crew_accumulation_rate;
+      s->crew_planet = rd.planet_crew_modifier;
       RaceRules rr;
       rr.repair_strength = rd.repair_strength; rr.crew_yellow = rd.crew_yellow; rr.crew_red = rd.crew_red;
       rr.repair_yellow = rd.repair_yellow; rr.repair_red = rd.repair_red; rr.weapon_yellow = rd.weapon_yellow; rr.weapon_red = rd.weapon_red;
@@ -1515,6 +1553,7 @@ struct Game::Impl {
                            -s.st.pos[2] - sm.bounds[2] * s.scale, 0.0f, 198);
     }
     spawned.push_back(s);
+    OwnerGain(s);
     if (select) selected = static_cast<int>(spawned.size()) - 1;
     if (offset_row) Message(s.label + (s.movable ? " gesetzt. Ziel auf der Karte antippen = hinfliegen." : " gesetzt (unbeweglich)."));
     return true;
@@ -1548,12 +1587,18 @@ struct Game::Impl {
     const unsigned hid = in.object >= 0 && in.object < static_cast<int>(map.objects.size()) ? (map.objects[static_cast<size_t>(in.object)].handle & 0x7fffffffu) : 0;
     s.id = hid && FindById(hid) < 0 ? hid : next_id++;  // Kennung = Handle des Kartenobjekts (fuer den Spielstand)
     spawned.push_back(s);
+    OwnerGain(s);
     return static_cast<int>(spawned.size()) - 1;
   }
 
   void CycleSpawnTeam() {
     spawn_team = spawn_team % 8 + 1;
-    if (selected >= 0 && selected < static_cast<int>(spawned.size())) spawned[static_cast<size_t>(selected)].team = spawn_team;
+    if (selected >= 0 && selected < static_cast<int>(spawned.size())) {
+      Spawned& sx = spawned[static_cast<size_t>(selected)];
+      OwnerLose(sx);
+      sx.team = spawn_team;
+      OwnerGain(sx);
+    }
     Message("Team " + std::to_string(spawn_team));
   }
 
@@ -1604,6 +1649,7 @@ struct Game::Impl {
       return;
     }
     for (const Spawned& x : spawned) if (x.sel) UnstampStation(x);
+    for (const Spawned& x : spawned) if (x.sel) OwnerLose(x);
     spawned.erase(std::remove_if(spawned.begin(), spawned.end(), [](const Spawned& x) { return x.sel; }), spawned.end());
     selected = -1;
     Message(std::to_string(n) + (n == 1 ? " Objekt entfernt." : " Objekte entfernt."));
@@ -1723,7 +1769,9 @@ struct Game::Impl {
         if (r.race_changed) t.hp.race = p.race;
         if (r.owner_changed) {
           t.hp.race = p.race;
+          OwnerLose(t);
           t.team = p.team;
+          OwnerGain(t);
           t.target_id = 0;
           t.auto_move = 0;
           t.beam_id = 0;
@@ -2090,7 +2138,7 @@ struct Game::Impl {
     }
     if (any_gone) {
       const auto gone = [](const Spawned& s) { return s.dying && s.die.left <= 0; };
-      for (const Spawned& s : spawned) if (gone(s)) UnstampStation(s);
+      for (const Spawned& s : spawned) if (gone(s)) { UnstampStation(s); OwnerLose(s); }
       spawned.erase(std::remove_if(spawned.begin(), spawned.end(), gone), spawned.end());
     }
     if (sel_changed) {  // Hauptobjekt war betroffen: naechstes ausgewaehltes Objekt uebernehmen
@@ -2281,6 +2329,28 @@ struct Game::Impl {
         Message(n > 0 ? "Transport zu " + t.label : "Kein gueltiges Ziel.");
       } else {
         Message("Kein Ziel getroffen.");
+      }
+      return;
+    }
+    if (!build_armed.empty()) {  // Bauplatz fuer das ausgewaehlte Bauschiff (Tippebene y = 0)
+      const std::string odf = build_armed;
+      build_armed.clear();
+      if (selected >= 0 && selected < static_cast<int>(spawned.size()) && std::fabs(d[1]) > 1e-4f) {
+        const float t = (kTapPlaneY - o[1]) / d[1];
+        if (t > 0) {
+          Spawned& rig = spawned[static_cast<size_t>(selected)];
+          rig.site_odf = odf;
+          rig.site[0] = o[0] + d[0] * t; rig.site[1] = kTapPlaneY; rig.site[2] = o[2] + d[2] * t;
+          rig.has_site = true;
+          if (rig.bq.active) { Message("Das Bauschiff baut noch."); rig.has_site = false; return; }
+          if (CanFly(rig)) { rig.auto_move = 0; SetShipTarget(&rig.st, rig.site); }
+          GridFx g;
+          g.pos[0] = rig.site[0]; g.pos[1] = kTapPlaneY; g.pos[2] = rig.site[2];
+          g.size = 50.0f;
+          g.last = clock;
+          gridfx.push_back(g);
+          Message(rig.label + " fliegt zum Bauplatz (" + odf + ").");
+        }
       }
       return;
     }
@@ -2707,6 +2777,149 @@ struct Game::Impl {
 
   // Startobjekte (Armada.exe 0x442fd0): nur fuer Plaetze mit Spieler, deren Team in der Karte kein Objekt besitzt. Liste aus der Rassen-ODF nach "Standardeinheiten"
   // (0 Karteneinheiten = nichts, 1 minimal, 2 Standard, 3 Super Side), Ort: Pfad Camera_<Team> oder Kartenmitte, dann Spirale (SkSpiralPlace).
+  // Startwerte je Team (Armada.exe 0x448d50): aktuelle Werte aus den Lobby-Einstellungen (Spielart "Super Side" nimmt RTS_CFG.h), Hoechstwerte aus RTS_CFG.h,
+  // Offiziere aktuell = Hoechstzahl = Lobbywert. Kostenfaktor nach Platzart (nur Computer, nur wenn eine Spielart gewaehlt wurde).
+  void InitResources() {
+    float dil_max = 999999, crew_max = 99999;
+    for (const TeamResources& r : team_res) { dil_max = r.dilithium_max; crew_max = r.crew_max; break; }
+    for (int t = 0; t < 9; ++t) {
+      team_res[t] = TeamResources();
+      team_res[t].dilithium_max = dil_max;
+      team_res[t].crew_max = crew_max;
+      team_res[t].dilithium = 3500;   // cfgStartingDilithium
+      team_res[t].crew = 4000;        // cfgStartingCrew
+      team_res[t].officers = team_res[t].officers_max = 100;
+      team_ai[t] = AiLevel::Human;
+    }
+    game_type_set = sk_set.v[kOptGameType] >= 0;
+    const int n = SkSlots();
+    for (int i = 0; i < n; ++i) {
+      const SkSlot& sl = sk_slot[i];
+      if (sl.kind == 0 || sl.team < 1 || sl.team > 8) continue;
+      TeamResources& r = team_res[sl.team];
+      if (sk_set.v[kOptUnits] != 3) {
+        r.dilithium = static_cast<float>(SkResourceValue(labels, kOptDilithium, sk_set.v[kOptDilithium]));
+        r.crew = static_cast<float>(SkResourceValue(labels, kOptCrew, sk_set.v[kOptCrew]));
+      }
+      r.officers = r.officers_max = SkResourceValue(labels, kOptOfficers, sk_set.v[kOptOfficers]);
+      team_ai[sl.team] = sl.kind == 2 ? AiLevel::Medium : AiLevel::Human;
+    }
+    for (const Spawned& o : spawned) OwnerGain(o);
+  }
+
+  // Ort fuer ein fertiges Schiff neben der Werft (die Ausgabewarteschlange des Originals, 0x46eac0, ist nicht gelesen): erster freier Punkt der Startspirale.
+  void FreeSpotNear(const Spawned& yard, float out[3]) {
+    float x = yard.st.pos[0], z = -yard.st.pos[2];
+    SkSpiralPlace(x, z,
+                  [&](float px, float pz) {
+                    if (path_grid.Blocked(px, pz)) return false;
+                    for (const Spawned& o : spawned)
+                      if (Dist3(o.st.pos, std::array<float, 3>{px, 0.0f, -pz}.data()) < RadiusOf(o) + 60.0f) return false;
+                    return true;
+                  },
+                  &x, &z);
+    out[0] = x; out[1] = 0.0f; out[2] = -z;
+  }
+
+  static const char* StartFailText(StartResult r) {
+    switch (r) {
+      case StartResult::NoDilithium: return "Nicht genug Dilithium.";
+      case StartResult::NoOfficers: return "Nicht genug Offiziere.";
+      case StartResult::NoCrew: return "Nicht genug Besatzung.";
+      default: return "";
+    }
+  }
+
+  void OnBuildEvent(size_t i, const BuildQueue::Result& ev) {
+    if (ev.event == BuildQueue::Event::None) return;
+    const std::string who = spawned[i].label;
+    UnitDef u;
+    const bool ok = odf_lib && LoadUnitDef(*odf_lib, ev.item.odf, &u);
+    const std::string what = ok && !u.unit_name.empty() ? u.unit_name : ev.item.odf;
+    const int team = spawned[i].team;
+    switch (ev.event) {
+      case BuildQueue::Event::Started: Message(who + ": baut " + what + " (" + std::to_string(static_cast<int>(ev.item.cost.time + 0.5f)) + " s)."); break;
+      case BuildQueue::Event::Cancelled: Message(who + ": Bau abgebrochen, Kosten erstattet."); break;
+      case BuildQueue::Event::Failed:
+        Message(std::string(StartFailText(ev.why)) + " (" + what + ")");
+        if (spawned[i].has_site) spawned[i].has_site = false;
+        break;
+      case BuildQueue::Event::Completed: {
+        TeamResources& r = Res(team);
+        if (ok && u.class_label == "upgrade") {  // Offiziersquartier (0x45f570): Grenze und Bestand steigen, nichts wird erzeugt, die Offiziere kommen nicht zurueck
+          r.officers_max += u.officer_gain;
+          r.officers += u.officer_gain;
+          r.AddOfficers(-ev.item.cost.officers);
+          Message(what + " fertig: Offiziere +" + std::to_string(u.officer_gain));
+          break;
+        }
+        float pos[3];
+        if (spawned[i].has_site) {
+          for (int k = 0; k < 3; ++k) pos[k] = spawned[i].site[k];
+          spawned[i].has_site = false;
+        } else {
+          FreeSpotNear(spawned[i], pos);
+        }
+        const size_t before = spawned.size();
+        SpawnAt(ev.item.odf, team, pos, false, false);
+        if (spawned.size() > before) {
+          Spawned& ns = spawned.back();
+          if (ns.starbase_cls && ns.officer_gain > 0) { r.officers_max += ns.officer_gain; r.officers += ns.officer_gain; }  // 0x45f530
+          Message(what + " fertig.");
+        }
+        break;
+      }
+      default: break;
+    }
+  }
+
+  void StepProduction(float dt) {
+    for (size_t i = 0; i < spawned.size(); ++i) {
+      if (spawned[i].team <= 0 || spawned[i].derelict || spawned[i].dying) continue;
+      TeamResources& r = Res(spawned[i].team);
+      if (spawned[i].starbase_cls) AccumulateCrew(&r, spawned[i].crew_rate, 1.0f, dt);
+      // Bauschiff: erst am Bauplatz bezahlen und starten (0x457b80)
+      if (spawned[i].has_site && spawned[i].bq.items.empty() && !spawned[i].bq.active) {
+        const float dx = spawned[i].st.pos[0] - spawned[i].site[0], dz = spawned[i].st.pos[2] - spawned[i].site[2];
+        if (std::sqrt(dx * dx + dz * dz) < 150.0f) {
+          QueueItem it;
+          it.odf = spawned[i].site_odf;
+          it.cost = CostOf(it.odf, spawned[i].team);
+          spawned[i].bq.Enqueue(it);
+        }
+      }
+      if (spawned[i].bq.items.empty()) continue;
+      const BuildQueue::Result ev = spawned[i].bq.Update(&r, dt);
+      OnBuildEvent(i, ev);
+    }
+  }
+
+  void QueueBuild(int item) {
+    if (selected < 0 || selected >= static_cast<int>(spawned.size())) return;
+    Spawned& sp = spawned[static_cast<size_t>(selected)];
+    if (item < 0 || item >= static_cast<int>(sp.build_items.size())) return;
+    const std::string& odf = sp.build_items[static_cast<size_t>(item)];
+    if (sp.movable) {  // Bauschiff: Bauplatz antippen
+      build_armed = odf;
+      move_armed = attack_armed = transport_armed = false;
+      Message("Bauplatz auf der Karte antippen.");
+      return;
+    }
+    QueueItem it;
+    it.odf = odf;
+    it.cost = CostOf(odf, sp.team);
+    if (!sp.bq.Enqueue(it)) Message("Warteschlange voll (5).");
+    else Message(odf + " in der Warteschlange (" + std::to_string(sp.bq.Size()) + ").");
+  }
+
+  void CancelBuild() {
+    if (selected < 0 || selected >= static_cast<int>(spawned.size())) return;
+    Spawned& sp = spawned[static_cast<size_t>(selected)];
+    sp.has_site = false;
+    const BuildQueue::Result ev = sp.bq.Cancel(&Res(sp.team));
+    OnBuildEvent(static_cast<size_t>(selected), ev);
+  }
+
   void SkCreateStartUnits(const std::vector<char>& team_has_objects) {
     const int mode = sk_set.v[kOptUnits];
     if (mode == 0 || !odf_lib) return;
@@ -2766,6 +2979,7 @@ struct Game::Impl {
       o.team = sk_slot[o.team - 1].team;
       ++owned;
     }
+    InitResources();
     SkCreateStartUnits(has_objects);
     auto camera = [&](int player, float out[3]) {
       for (const BznPath& p : map.paths) {
@@ -2899,6 +3113,13 @@ struct Game::Impl {
       st->control[4] = cmd(UiAction::Orders, "b_order", "Befehle", live);
       st->control[5] = cmd(UiAction::StandDown, "b_standdown", "Abwarten", live, sp.alert == 3);
       st->control[7] = cmd(UiAction::Transport, "b_transport", "Beamen", live && sp.hp.crew_max > 0 && sp.movable, transport_armed);
+      if (!sp.build_items.empty()) st->control[9] = cmd(UiAction::BuildMenu, "b_build", "Bauen", live);
+    } else if (cmd_page == CmdPage::Build) {
+      for (size_t k = 0; k < sp.build_items.size() && k < 10; ++k)
+        st->control[k] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Build0) + static_cast<int>(k)), ("b_" + sp.build_items[k]).c_str(), sp.build_items[k].c_str(), live,
+                             build_armed == sp.build_items[k]);
+      st->control[10] = cmd(UiAction::CancelBuild, "b_cancel", "Abbruch", live && (sp.bq.active || sp.has_site));
+      st->control[11] = cmd(UiAction::Back, "b_back", "Zurueck", true);
     } else {
       st->control[0] = cmd(UiAction::AlertGreen, "b_galert", "Gruen", live, sp.alert == 0);
       st->control[1] = cmd(UiAction::AlertYellow, "b_yalert", "Gelb", live, sp.alert == 1);
@@ -2911,7 +3132,12 @@ struct Game::Impl {
       st->control[10] = cmd(UiAction::SelfDestruct, "b_gselfdes", "Selbstzerst.", live);
       st->control[11] = cmd(UiAction::Back, "b_back", "Zurueck", true);
     }
-    for (size_t i = 0; i < sp.specials.size() && i < 6; ++i) {
+    for (size_t i = 0; i < sp.bq.items.size() && i < 6; ++i) {  // Warteschlange: der erste Eintrag wird gebaut
+      char lab[16];
+      std::snprintf(lab, sizeof lab, i == 0 && sp.bq.active ? "%d%%" : "...", static_cast<int>(sp.bq.Progress() * 100.0f));
+      st->rail[i] = cmd(UiAction::None, ("b_" + sp.bq.items[i].odf).c_str(), lab, true, i == 0 && sp.bq.active);
+    }
+    for (size_t i = 0; i < sp.specials.size() && i < 6 && sp.bq.items.empty(); ++i) {
       std::string lab = sp.specials[i].second;
       if (lab.size() > 8) lab.resize(8);
       st->rail[i] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Special0) + static_cast<int>(i)), ("b_" + sp.specials[i].first).c_str(), lab.c_str(), true);
@@ -2922,6 +3148,12 @@ struct Game::Impl {
     HudState st;
     if (map_mode) FillCommands(&st);
     st.ui = CurrentUiState();
+    {
+      const TeamResources& tr = team_res[human_team >= 0 && human_team < 9 ? human_team : 0];
+      st.res[0] = static_cast<int>(tr.dilithium);
+      st.res[1] = static_cast<int>(tr.crew);
+      st.res[2] = tr.officers;
+    }
     st.race_label = HudRaceName(static_cast<HudRace>(hud_race));
     if (map_mode && map_loaded) {
       char buf[96];
@@ -2931,7 +3163,8 @@ struct Game::Impl {
         h.name = sp.label;
         h.cls = sp.cls;
         h.wire = ToLowerAscii(sp.odf);
-        if (sp.st.speed > 1.0f) { std::snprintf(buf, sizeof buf, "%.0f m/s%s", sp.st.speed, sp.st.warp ? " WARP" : ""); h.status = buf; }
+        if (sp.bq.active) { std::snprintf(buf, sizeof buf, "Bau %d%% (%d)", static_cast<int>(sp.bq.Progress() * 100.0f), static_cast<int>(sp.bq.Size())); h.status = buf; }
+        else if (sp.st.speed > 1.0f) { std::snprintf(buf, sizeof buf, "%.0f m/s%s", sp.st.speed, sp.st.warp ? " WARP" : ""); h.status = buf; }
         h.crew = static_cast<int>(sp.hp.crew + 0.5f);
         h.crew_max = static_cast<int>(sp.hp.crew_max + 0.5f);
         h.crew_state = sp.hp.crew_status() == 0 ? 1.0f : (sp.hp.crew_status() == 1 ? 0.5f : 0.0f);
@@ -3083,7 +3316,13 @@ struct Game::Impl {
         for (Spawned& x : spawned)
           if (x.sel && !x.derelict) x.hp.exploded = true;
         break;
-      case UiAction::Back: cmd_page = CmdPage::Main; break;
+      case UiAction::Back: cmd_page = CmdPage::Main; build_armed.clear(); break;
+      case UiAction::BuildMenu: cmd_page = CmdPage::Build; break;
+      case UiAction::Build0: case UiAction::Build1: case UiAction::Build2: case UiAction::Build3: case UiAction::Build4:
+      case UiAction::Build5: case UiAction::Build6: case UiAction::Build7: case UiAction::Build8: case UiAction::Build9:
+        QueueBuild(static_cast<int>(a) - static_cast<int>(UiAction::Build0));
+        break;
+      case UiAction::CancelBuild: build_armed.clear(); CancelBuild(); break;
       case UiAction::AlertGreen: case UiAction::AlertYellow: case UiAction::AlertRed:
         if (SelCount() > 0) {
           const int lv = a == UiAction::AlertGreen ? 0 : (a == UiAction::AlertYellow ? 1 : 2);
@@ -3364,6 +3603,7 @@ void Game::OnFrame(double dt) {
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
+    s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
     struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
     std::vector<SymItem> syms;
     std::vector<char> sym_inst(s.scene.instances.size(), 0);

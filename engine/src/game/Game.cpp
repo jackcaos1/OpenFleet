@@ -357,6 +357,7 @@ struct Game::Impl {
     std::vector<std::string> build_items;   // buildItem0..9
     int officer_gain = 0;                   // officerGain (Sternbasis / Upgrade)
     bool exit_freighter = false;
+    unsigned docked_id = 0;                 // Bergbaustation: angedockter Frachter (dockedShip, +0x7d0)
     int dock_phase = 0;                     // 0 keine, 1 Kurve, 2 Vorrutschen, 3 Entladen (Phasen der Warteschlange, +0x67c)
     float sp_p0[3] = {0, 0, 0}, sp_t0[3] = {0, 0, 0}, sp_p1[3] = {0, 0, 0}, sp_t1[3] = {0, 0, 0}, sp_t = 0;  // Hermite-Kurve zum Schlangenende
     std::vector<unsigned> dq;               // Bergbaustation: Eingangswarteschlange (MiningQueueManager)
@@ -391,6 +392,7 @@ struct Game::Impl {
     float radius = 50;
     float bounds[6] = {0, 0, 0, 0, 0, 0};   // Bounding-Box (GL: min xyz, max xyz), ungeskaliert
     std::vector<ModelHardpoint> hardpoints;
+    std::unique_ptr<ModelRenderer> r_ore;  // Bergbaustation mit sichtbarem "oreglow" (angedockter Frachter)
     std::vector<float> tris;  // Dreiecke des Modells (je 9 Werte, Modellraum GL), Ort der Sterbeeffekte
   };
   struct SpawnEntry {
@@ -548,14 +550,16 @@ struct Game::Impl {
     return r;
   }
 
-  std::unique_ptr<ModelRenderer> BuildMapRenderer(const std::string& lname, Model* built, OrigBounds* ob = nullptr) {
+  std::unique_ptr<ModelRenderer> BuildMapRenderer(const std::string& lname, Model* built, OrigBounds* ob = nullptr, bool show_ore = false) {
     auto it = sod_lower.find(lname);
     if (it == sod_lower.end() || !source) return nullptr;
     std::vector<uint8_t> bytes;
     Sod sd;
     std::string err;
     if (!source->ReadFile("SOD/" + it->second, &bytes) || !ParseSod(bytes.data(), bytes.size(), &sd, &err)) return nullptr;
-    BuildModel(sd, lname, built, BuildOptions());
+    BuildOptions bo;
+    bo.show_ore = show_ore;
+    BuildModel(sd, lname, built, bo);
     if (ob) *ob = ComputeOrigBounds(sd, lname);
     std::unique_ptr<ModelRenderer> r(new ModelRenderer());
     if (!r->Init()) return nullptr;
@@ -1478,6 +1482,7 @@ struct Game::Impl {
         }
     std::unique_ptr<SpriteRenderer> sp(new SpriteRenderer());
     if (sp->Init() && sp->SetNodes(built, spr, *source) > 0) sm.sp = std::move(sp);
+    if (sod.find("mining") != std::string::npos) { Model dummy; sm.r_ore = BuildMapRenderer(sod, &dummy, nullptr, true); }  // Ansicht mit Strahlenkranz fuer angedockte Frachter
     return true;
   }
 
@@ -3103,6 +3108,11 @@ struct Game::Impl {
       }
       if (stn.dq.empty()) stn.dq_len = 0;
     }
+    for (Spawned& stn : spawned) {  // angedockter Frachter verschwunden: Kranz aus
+      if (stn.docked_id == 0) continue;
+      const int oi = FindById(stn.docked_id);
+      if (oi < 0 || spawned[static_cast<size_t>(oi)].dying || spawned[static_cast<size_t>(oi)].fr_state != 7) stn.docked_id = 0;
+    }
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
       if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0 || f.exiting) continue;
@@ -3228,7 +3238,7 @@ struct Game::Impl {
           ShipForward(f.st, fwd);
           const float dot = (P[0] - f.st.pos[0]) * fwd[0] + (P[1] - f.st.pos[1]) * fwd[1] + (P[2] - f.st.pos[2]) * fwd[2];
           if (dot > 0) { move_front(); f.st.speed = speed; }
-          else { f.st.speed = 0; if (head) { f.fr_state = 7; f.dock_phase = 3; } }
+          else { f.st.speed = 0; if (head) { f.fr_state = 7; f.dock_phase = 3; stw.docked_id = f.id; if (stw.team == human_team) { CinematicRequest cr; cr.value0 = 3.0f; cr.int0 = 3; cr.int1 = 4; cr.object = f.id; PostCinematic(&cinematic_requests, cr); } } }  // 0x45aa50: dockedShip gesetzt (Strahlenkranz an), Kinosicht-Anforderung fuer den lokalen Spieler (0x47aef0, Werte roh)
           continue;
         }
         if (f.fr_state == 7) {  // Phase 3: am Kopf entladen (MiningStation::Receive); fertig: Schlange verlassen, Ausfahrt ueber die Ausgabe-Warteschlange (+0x7c8)
@@ -3244,6 +3254,7 @@ struct Game::Impl {
             stw.dq_len = std::max(0.0f, stw.dq_len - r2);
             f.dock_phase = 0;
             f.fr_state = 0;
+            stw.docked_id = 0;
             const size_t fi = i;
             BeginExit(fi, stw, hp_pos, hp_dir, true);
           }
@@ -4523,8 +4534,9 @@ void Game::OnFrame(double dt) {
       Mat4 m, r;
       ShipMatrices(sp.st, sp.scale, &m, &r);
       const float* c = kMapTeamColors[sp.team >= 0 && sp.team < 9 ? sp.team : 0];
-      it->second.r->SetTeamColor(c[0], c[1], c[2]);
-      it->second.r->Draw(proj * view * m, rot * r, &m);
+      ModelRenderer* mr = sp.docked_id != 0 && it->second.r_ore ? it->second.r_ore.get() : it->second.r.get();
+      mr->SetTeamColor(c[0], c[1], c[2]);
+      mr->Draw(proj * view * m, rot * r, &m);
       if (it->second.sp) it->second.sp->Draw(proj, view * m, s.clock);
     }
     if (s.map_loaded && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {  // Einzelne Sterne zwischen Spielebene und Hintergrund: Tiefenwirkung beim Verschieben (Nutzerwunsch)

@@ -57,3 +57,7 @@ Things that could not be settled from the executable or the data files. Add a re
 
 ## Build 99
 - Mining station delivers a free freighter (verified in the code, see economy.md). Please check in the original: freighter appears at the station right when it is finished, its crew and the station's crew values, whether the AI then builds fewer freighters.
+
+## Build 104
+- Station destroyed while a freighter is docked / queued: a first report says the freighter flies on; the exact cases are listed for the community in [community-tests.md](community-tests.md) item 1.
+- Dock animation (animation state 0x10) and the `oreglow` beam ring: the ring is shown while a freighter is docked (client), the station animation and the cinematic shot are not implemented; see community-tests.md item 2.

@@ -20,7 +20,7 @@ This is a non-commercial fan project. It is not affiliated with, endorsed by or 
 - `engine/`: platform-independent core (file loaders, game logic, rendering code)
 - `desktop/`: Linux client (SDL2, OpenGL ES)
 - `android/`: Android client (NativeActivity + EGL, Gradle)
-- `docs/`: documentation of file formats and findings (e.g. `docs/model_audit.md`)
+- `docs/`: documentation of file formats and findings (e.g. `docs/model_audit.md`); `docs/community-tests.md` lists things owners of the original game can check for us; `docs/future-features.md` collects ideas beyond a faithful re-implementation
 - `tools/`: helper scripts and tests, including `tools/check_layering.py`, which enforces the separation between core and platform layers
 
 See `CLAUDE.md` for project rules, goals and milestones.

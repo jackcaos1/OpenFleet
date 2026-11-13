@@ -150,3 +150,9 @@ Geometry (MiningQueueManager, created in 0x45a420): the dock hardpoint HP with a
 - **Order 8 handler 0x42af80** only acts for AI teams (0x472100 reads the team flag +0xa8): for an AI freighter in the docked state with the right class flags it issues order 7 (slot 0x50). Human freighters are driven by the queue manager alone.
 - **Station destroyed:** the station destructor (0x45ac30 -> 0x45a6d0) tears down its managers; nothing in the queue code re-targets the freighters, and `0x46e820` (craft destruction) only deletes attached children of a specific class. What exactly happens to docked or queued freighters is therefore
   not determinable from the static code alone; the client lets them resume normal flight.
+
+## Dock presentation (client, build 104)
+- While a freighter is at the head of the queue (unloading), the station's `oreglow` mesh group (six `wbeams` beam meshes around the station) is drawn; otherwise it is hidden (0x45a7d0 toggles the node's flags with `dockedShip`).
+  The moon's sprite node of the same name is not affected. The client builds a second renderer for the `*mining` models for this.
+- A cinematic request (0x47aef0) is posted for the local player when a freighter starts unloading; the raw arguments of the original call are 0, 0, station, freighter, 4, 3, `0x5cd560`, 3.0, 0 (last argument first); the director itself is not implemented.
+- The station animation state 0x10 (SOD animation channels of the mining station models) is not played: the client does not animate station models yet.

@@ -46,7 +46,7 @@ int MaxLod(const Sod& sod) {
 }
 
 struct Flags {
-  bool oq = false, borg = false, damage = false;
+  bool oq = false, borg = false, damage = false, ore = false;
   int lod = -1;
 };
 
@@ -59,6 +59,7 @@ Flags AncestorFlags(const Sod& sod, const std::unordered_map<std::string, size_t
     if (lower == "oq") f.oq = true;
     if (StartsWith(lower, "borg")) f.borg = true;
     if (StartsWith(lower, "damage")) f.damage = true;
+    if (lower == "oreglow" && cur != i) f.ore = true;  // Nachfahren (der Mond hat einen gleichnamigen Sprite-Knoten, der sichtbar bleibt)
     const int lod = LodLevel(lower);
     if (lod >= 0) f.lod = lod;
     auto it = by_name.find(sod.nodes[cur].parent);
@@ -85,6 +86,7 @@ std::vector<char> VisibleNodes(const Sod& sod, const BuildOptions& o) {
     bool show = true;
     if (f.lod >= 0 && f.lod != lod) show = false;
     if (f.oq && !o.show_oq) show = false;
+    if (f.ore && !o.show_ore) show = false;
     if (f.borg && !o.show_borg) show = false;
     if (f.damage && !f.borg && !o.show_damage) show = false;
     if (f.damage && f.borg && !o.show_borg) show = false;

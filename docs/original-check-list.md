@@ -22,3 +22,4 @@ Things that could not be settled from the executable or the data files. Add a re
 - [ ] Do names of selected ships appear above them (global 0x60c4b0 = 1 by default)? Where, and for which ships (own, all)?
 - [ ] Position and size of the shield / energy bars and crew dots over a selected ship; group number display.
 - [ ] Target marker after a move order: a rotating square shrinking from size 50 to 2 (about 17 frames, duration depends on the frame rate); check shape and apparent duration.
+- [ ] Info panel wireframe: which part of the wireframe belongs to which system (client assumes part i = system i: shield, engines, life support, sensors, weapons) and how damage looks (white / yellow / red).

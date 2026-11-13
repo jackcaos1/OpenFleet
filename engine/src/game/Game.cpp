@@ -995,6 +995,10 @@ struct Game::Impl {
         st.color = SgGetInt(base.tail[b + 5]);
         st.map_color = SgGetInt(base.tail[b + 6]);
       }
+      if (t > 0 && t < 9) {  // aktuelle Ressourcen (scrap = Dilithium, pilot = Offiziere; der Bestand ergibt sich beim Laden aus den Objekten)
+        const TeamResources& tr = team_res[t];
+        st.scrap = tr.dilithium; st.max_scrap = tr.dilithium_max; st.max_pilot = tr.officers_max; st.crew = tr.crew; st.max_crew = tr.crew_max;
+      }
     }
     std::set<int> adopted;
     for (size_t ii = 0; ii < scene.instances.size(); ++ii)
@@ -1102,6 +1106,17 @@ struct Game::Impl {
     LoadHud();
     in_game = true;
     selected = -1;
+    for (int t = 1; t < 9 && t < kSaveTeams; ++t) {  // Ressourcen zurueck; Offiziere = Hoechstzahl - Kosten der vorhandenen Objekte (SetOwner 0x46e030)
+      const SaveTeam& st = g.teams[t];
+      TeamResources& tr = team_res[t];
+      tr.dilithium = st.scrap;
+      tr.crew = st.crew;
+      if (st.max_scrap > 0) tr.dilithium_max = st.max_scrap;
+      if (st.max_crew > 0) tr.crew_max = st.max_crew;
+      tr.officers_max = st.max_pilot > 0 ? st.max_pilot : tr.officers_max;
+      tr.officers = tr.officers_max;
+      for (const Spawned& o : spawned) if (o.team == t) tr.AddOfficers(-o.officers);
+    }
     // Blick auf die erste Basis/das erste Schiff von Team 1
     for (const Spawned& sp : spawned)
       if (sp.team == 1) {

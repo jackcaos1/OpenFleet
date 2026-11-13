@@ -45,6 +45,13 @@ planet class field +0x1f4 is and the search radius; the client uses no planet bo
 both belong to the same team and the station is not disabled: the transferred amount is `min(cargo, rate * dt)` with the class field +0x578
 (`dilithiumTransferRate`, 15 for the mining stations), the cargo is reduced and `AddDilithium` is called. **open:** freighter loading at the moon, speeds, moon amounts.
 
+## Client model of the freighter loop (ASSUMED, not read from the executable)
+Data: freighter `maxScrap` 150 = cargo capacity, mining beam `gminebm` (shot delay 1.5 s, range 120) with `minebm` `damageBase` 15, moon `mdmoon*` `maxHealth` 20000 (classLabel `scrap`),
+mining station `dilithiumTransferRate` 15, `dockingBuffer` 70. The client: freighter -> nearest own mining station -> nearest moon with supply to that station ->
+15 per 1.5 s into the cargo (the moon supply shrinks, unless "infinite moons") -> back, unload with the verified station rule above. The state machine of `Freighter`
+(vtable 0x5cbea4), the docking hardpoints and the beam-to-cargo conversion are open. Officers: `Craft::SetOwner` (0x46e030) subtracts `officerCost` for every craft that
+gets an owner, the destruction (0x46e820) gives it back; so officers are a permanent unit cap, the build start/completion pair only reserves them meanwhile.
+
 ## Decommission (0x465c50)
 Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew (+0x4d8, clamped) to the team.
 

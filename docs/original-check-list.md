@@ -23,3 +23,10 @@ Things that could not be settled from the executable or the data files. Add a re
 - [ ] Position and size of the shield / energy bars and crew dots over a selected ship; group number display.
 - [ ] Target marker after a move order: a rotating square shrinking from size 50 to 2 (about 17 frames, duration depends on the frame rate); check shape and apparent duration.
 - [ ] Info panel wireframe: which part of the wireframe belongs to which system (client assumes part i = system i: shield, engines, life support, sensors, weapons) and how damage looks (white / yellow / red).
+
+## Economy (night branch night/economy-ai)
+- Build menu slots: the client puts the build items in the first slots of the command panel (Cancel 11, Back 12). Check the real layout and whether the queue is shown in the rail.
+- Placement of ships built at a yard (client: first free spot of the start spiral around the yard) and the exit animation.
+- Construction ship: does the original start paying at the site (0x457b80) and show a scaffold; how long the ship stays; whether placement is checked.
+- Freighter loop speed and cargo handling (client model, see docs/formats/economy.md).
+- Resource display: dilithium / crew / officers values and when they change (crew income of starbases 3.5 per second each).

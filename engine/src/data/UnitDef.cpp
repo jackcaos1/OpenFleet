@@ -73,6 +73,8 @@ bool LoadUnitDef(OdfLibrary& lib, const std::string& name, UnitDef* out, std::st
   o->GetInt("dilithiumCost", &out->dilithium_cost);
   o->GetInt("officerGain", &out->officer_gain);
   o->GetFloat("dilithiumTransferRate", &out->dilithium_transfer_rate);
+  o->GetFloat("maxScrap", &out->max_scrap);
+  o->GetFloat("dockingBuffer", &out->docking_buffer);
   for (int i = 0; i < 12; ++i) {
     std::string v;
     if (o->GetString("buildItem" + std::to_string(i), &v) && !v.empty()) out->build_items.push_back(ToLowerAscii(v));

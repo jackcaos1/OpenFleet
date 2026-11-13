@@ -80,6 +80,8 @@ struct UnitDef {
   float build_time = 0;
   int officer_gain = 0;                     // officerGain: Starbase / Upgrade erhoehen die Offiziersgrenze (docs/formats/economy.md)
   float dilithium_transfer_rate = 0;       // Bergbaustation: Dilithium je Sekunde
+  float max_scrap = 0, docking_buffer = 0;  // Frachter: Ladekapazitaet (maxScrap), Bergbaustation: dockingBuffer
+  std::string mining_weapon;               // Waffen-ODF mit classLabel "minebm" (Bergbaustrahl), leer wenn keine
   std::vector<std::string> build_items;    // buildItem0..9: was dieses Objekt bauen kann (ODF-Namen)
   int officer_cost = 0, crew_cost = 0, dilithium_cost = 0;
   float max_health = 0, shield_rate = 0, shield_delay = 0;

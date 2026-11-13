@@ -361,7 +361,17 @@ struct Game::Impl {
     float site[3] = {0, 0, 0};
     std::string site_odf;                   // was dort gebaut werden soll
     int placed = 0;                         // Zaehler der fertigen Schiffe (Ausgabeplatz)
+    // Bergbau (docs/formats/economy.md, ANNAHMEN fuer den Ablauf des Frachters)
+    bool freighter = false;                 // hat einen Bergbaustrahl
+    float cargo = 0, cargo_max = 0;         // Ladung / maxScrap
+    int fr_state = 0;                       // 0 Leerlauf, 1 zum Mond, 2 abbauen, 3 zur Station, 4 entladen
+    float fr_timer = 0;
+    bool mining_stn = false;                // classLabel "mining"
+    float transfer_rate = 0, dock_buffer = 0;
   };
+  struct Moon { float pos[3]; float radius; float amount; };  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
+  std::vector<Moon> moons;
+  bool infinite_moons = false;
   struct SpawnModel {
     std::unique_ptr<ModelRenderer> r;
     std::unique_ptr<SpriteRenderer> sp;
@@ -577,6 +587,29 @@ struct Game::Impl {
   // Hindernisse aus den Kartenobjekten ohne Team. Original: GameObjectClass avoidMe (+0x1a5, Standard 1; Nebel- und
   // Hintergrundklasse 0) wird zu Objekt +0xd8, dem Filter der Ausweichroutine 0x42ef70. Radius = Modellradius * Skalierung,
   // Asteroidenfeld = fieldRadius (ANNAHME, im Original nicht geprueft).
+  void BuildMoons() {
+    moons.clear();
+    if (!odf_lib) return;
+    std::set<int> done;
+    for (size_t ii = 0; ii < scene.instances.size(); ++ii) {
+      const MapInstance& in = scene.instances[ii];
+      if (in.team > 0 || in.object < 0 || in.object >= static_cast<int>(map.objects.size()) || done.count(in.object)) continue;
+      const BznObject& o = map.objects[static_cast<size_t>(in.object)];
+      const std::string odf = ToLowerAscii(o.odf);
+      if (odf.compare(0, 6, "mdmoon") != 0) continue;
+      done.insert(in.object);
+      Moon m;
+      const float* tm = in.transform.m;
+      for (int k = 0; k < 3; ++k) m.pos[k] = tm[12 + k];
+      const float sc = std::max(1e-3f, std::sqrt(tm[0] * tm[0] + tm[1] * tm[1] + tm[2] * tm[2]));
+      m.radius = map_radius[static_cast<size_t>(in.model)] * sc;
+      float hp = 20000.0f;
+      if (const OdfObject* od = odf_lib->Get(odf)) od->GetFloat("maxHealth", &hp);
+      m.amount = hp;
+      moons.push_back(m);
+    }
+  }
+
   void BuildMapObstacles() {
     map_obstacles.clear();
     if (!odf_lib) return;
@@ -829,6 +862,7 @@ struct Game::Impl {
            (sg && scene.instances[ii].object >= 0 && sg_state.count(map.objects[static_cast<size_t>(scene.instances[ii].object)].handle & 0x7fffffffu))))
         AdoptInstance(ii);
     BuildMapObstacles();
+    BuildMoons();
     if (sg) {
       for (Spawned& sp : spawned) {
         auto it = sg_state.find(sp.id);
@@ -1392,6 +1426,14 @@ struct Game::Impl {
     s->build_items = u.build_items;
     s->officer_gain = u.officer_gain;
     s->starbase_cls = u.class_label == "starbase";
+    s->mining_stn = u.class_label == "mining";
+    s->transfer_rate = u.dilithium_transfer_rate;
+    s->dock_buffer = u.docking_buffer;
+    s->cargo_max = u.max_scrap;
+    for (const WeaponSlot& ws : u.weapons) {
+      std::string wo = ToLowerAscii(ws.odf);
+      if (wo.size() >= 6 && wo.find("minebm") != std::string::npos) s->freighter = true;
+    }
     s->has_energy = u.max_special_energy > 0;
     s->hero = u.is_hero;
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
@@ -2792,6 +2834,7 @@ struct Game::Impl {
       team_ai[t] = AiLevel::Human;
     }
     game_type_set = sk_set.v[kOptGameType] >= 0;
+    infinite_moons = sk_set.v[kOptMoons] != 0;
     const int n = SkSlots();
     for (int i = 0; i < n; ++i) {
       const SkSlot& sl = sk_slot[i];
@@ -2891,6 +2934,86 @@ struct Game::Impl {
       if (spawned[i].bq.items.empty()) continue;
       const BuildQueue::Result ev = spawned[i].bq.Update(&r, dt);
       OnBuildEvent(i, ev);
+    }
+  }
+
+  // Frachter-Ablauf (ANNAHME, Armada.exe 0x458xxx nicht gelesen): zur naechsten eigenen Bergbaustation, zum naechsten Mond davon, mit dem Bergbaustrahl
+  // (gminebm: Schussabstand 1,5 s, Reichweite 120, minebm damageBase 15) die Ladung (maxScrap 150) fuellen, zurueck und mit der Rate der Station
+  // (dilithiumTransferRate) entladen; Entladen nach der echten Station-Routine 0x45a910 (Menge = min(Ladung, Rate * dt), nur solange der Vorrat unter dem Hoechstwert liegt).
+  void StepFreighters(float dt) {
+    for (size_t i = 0; i < spawned.size(); ++i) {
+      Spawned& f = spawned[i];
+      if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0) continue;
+      int home = -1;
+      float bd = 1e30f;
+      for (size_t k = 0; k < spawned.size(); ++k) {
+        const Spawned& st = spawned[k];
+        if (!st.mining_stn || st.team != f.team || st.derelict || st.dying || st.bq.active) continue;
+        const float d = Dist3(st.st.pos, f.st.pos);
+        if (d < bd) { bd = d; home = static_cast<int>(k); }
+      }
+      if (home < 0) { f.fr_state = 0; continue; }
+      const Spawned& st = spawned[static_cast<size_t>(home)];
+      int moon = -1;
+      float md = 1e30f;
+      for (size_t k = 0; k < moons.size(); ++k) {
+        if (!infinite_moons && moons[k].amount <= 0) continue;
+        const float d = Dist3(moons[k].pos, st.st.pos);
+        if (d < md) { md = d; moon = static_cast<int>(k); }
+      }
+      auto go = [&](const float target[3]) { if (CanFly(f) && !f.st.has_target) { f.auto_move = 0; SetShipTarget(&f.st, target); } };
+      const float srad = RadiusOf(st);
+      switch (f.fr_state) {
+        case 0:
+          if (moon >= 0) f.fr_state = f.cargo > 0.5f && f.cargo >= f.cargo_max ? 3 : 1;
+          else if (f.cargo > 0.5f) f.fr_state = 3;
+          break;
+        case 1: {
+          if (moon < 0) { f.fr_state = f.cargo > 0.5f ? 3 : 0; break; }
+          const Moon& m = moons[static_cast<size_t>(moon)];
+          float dx = f.st.pos[0] - m.pos[0], dz = f.st.pos[2] - m.pos[2];
+          const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+          const float stand = m.radius + 90.0f;   // Strahlreichweite 120 vom Rand
+          if (dl <= stand + 30.0f) { f.fr_state = 2; f.fr_timer = 0; break; }
+          const float tg[3] = {m.pos[0] + dx / dl * stand, 0.0f, m.pos[2] + dz / dl * stand};
+          go(tg);
+          break;
+        }
+        case 2: {
+          if (moon < 0) { f.fr_state = f.cargo > 0.5f ? 3 : 0; break; }
+          Moon& m = moons[static_cast<size_t>(moon)];
+          f.fr_timer += dt;
+          while (f.fr_timer >= 1.5f && f.cargo < f.cargo_max) {  // shotDelay des Strahls
+            f.fr_timer -= 1.5f;
+            const float take = std::min(15.0f, f.cargo_max - f.cargo);  // damageBase
+            const float got = infinite_moons ? take : std::min(take, m.amount);
+            f.cargo += got;
+            if (!infinite_moons) m.amount -= got;
+            if (got <= 0) break;
+          }
+          if (f.cargo >= f.cargo_max - 0.01f || (!infinite_moons && m.amount <= 0)) f.fr_state = 3;
+          break;
+        }
+        case 3: {
+          float dx = f.st.pos[0] - st.st.pos[0], dz = f.st.pos[2] - st.st.pos[2];
+          const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+          const float stand = srad + std::max(70.0f, st.dock_buffer);  // dockingBuffer
+          if (dl <= stand + 40.0f) { f.fr_state = 4; break; }
+          const float tg[3] = {st.st.pos[0] + dx / dl * stand, 0.0f, st.st.pos[2] + dz / dl * stand};
+          go(tg);
+          break;
+        }
+        case 4: {
+          TeamResources& r = Res(f.team);
+          if (r.dilithium < r.dilithium_max && f.cargo > 0) {
+            const float amt = std::min(f.cargo, std::max(1.0f, st.transfer_rate) * dt);
+            f.cargo -= amt;
+            r.AddDilithium(amt);
+          }
+          if (f.cargo <= 0.001f) { f.cargo = 0; f.fr_state = 0; }
+          break;
+        }
+      }
     }
   }
 
@@ -3604,6 +3727,7 @@ void Game::OnFrame(double dt) {
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
     s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
+    s.StepFreighters(static_cast<float>(std::min(dt, 0.1)));
     struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
     std::vector<SymItem> syms;
     std::vector<char> sym_inst(s.scene.instances.size(), 0);

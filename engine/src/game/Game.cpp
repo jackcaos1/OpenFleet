@@ -7,6 +7,7 @@
 #include <set>
 #include <array>
 #include <cstdio>
+#include <tuple>
 #include <ctime>
 #include <sstream>
 #include <cstdlib>
@@ -3563,10 +3564,17 @@ void Game::OnFrame(double dt) {
         }
         if (sy.sel) {  // Auswahlecken (GCselect, 3x3-Rahmen)
           const float h = 0.5f * sz * 1.5f, q = 22.0f * std::max(1.0f, H / 700.0f);
-          put("selection.00", px - h, py - h, q, q, 1.0f);
-          put("selection.20", px + h, py - h, q, q, 1.0f);
-          put("selection.02", px - h, py + h, q, q, 1.0f);
-          put("selection.22", px + h, py + h, q, q, 1.0f);
+          for (const auto& corner : {std::make_tuple("selection.00", -h, -h), std::make_tuple("selection.20", h, -h), std::make_tuple("selection.02", -h, h), std::make_tuple("selection.22", h, h)}) {
+            HudDraw d;  // Auswahlecken in Weiss, damit die Auswahl auffaellt (nicht in der Teamfarbe)
+            float uv[4];
+            bool add = false;
+            if (!s.hud_data.Sprite(std::get<0>(corner), &d.tex, uv, &add)) continue;
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = add;
+            d.x = px + std::get<1>(corner) - 0.5f * q; d.y = py + std::get<2>(corner) - 0.5f * q; d.w = q; d.h = q;
+            d.rgba[0] = d.rgba[1] = d.rgba[2] = d.rgba[3] = 1.0f;
+            dr.push_back(d);
+          }
         }
       }
       for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)

@@ -698,6 +698,7 @@ struct Game::Impl {
     // Stempel der Instanz-Initialisierung im Original (Armada.exe 0x450810 Schwarzes Loch, 0x451e00 Nebel, 0x4531a0 Planet, 0x453f00 Wurmloch)
     neb_lights.clear();
     build_blockers.clear();
+    planets.clear();
     for (const MapObstacle& mo : map_obstacles)
       if (mo.inst < 0) build_blockers.push_back({{mo.pos[0], mo.pos[1], mo.pos[2]}, mo.radius});  // Asteroidenfelder
     for (size_t oi = 0; oi < map.objects.size(); ++oi) {
@@ -743,6 +744,7 @@ struct Game::Impl {
             }
         }
         if (br > 0) build_blockers.push_back({{base.m[12], base.m[13], base.m[14]}, br});
+        if (br > 0 && cls == "planet_obj") planets.push_back({{base.m[12], base.m[13], base.m[14]}, br});
       }
       if (cls == "blackhole_obj") {
         float er = 10.0f; od->GetFloat("EventRadius", &er);
@@ -2465,7 +2467,7 @@ struct Game::Impl {
           const bool again = ghost_set && ghost_ok && std::hypot(tx - ghost[0], tz - ghost[2]) < std::max(150.0f, ghost_r);
           if (!again) {
             std::string why;
-            ghost_ok = SiteCheck(odf, tx, tz, &why);
+            ghost_ok = SiteCheck(odf, tx, tz, &why, true);
             ghost_set = true;
             ghost[0] = tx; ghost[1] = kTapPlaneY; ghost[2] = tz;
             Message(ghost_ok ? "Bauplatz frei. Nochmal antippen zum Bestaetigen." : why);
@@ -3415,46 +3417,65 @@ struct Game::Impl {
   // ---- Bauplatzpruefung (Nutzerwunsch; das Original legt den Fussabdruck von Stationen als Bounding-Box + footprintBuffer an, "to block building", station.odf) ----
   bool ghost_set = false, ghost_ok = false;
   float ghost[3] = {0, 0, 0}, ghost_r = 100.0f;
-  std::map<std::string, float> footprint_cache;
-
-  // Radius der Grundflaeche einer ODF: halbe Diagonale der Bounding-Box in x/z (skaliert) plus footprintBuffer
-  float FootprintRadius(const std::string& odf) {
+  struct Foot { float ox = 0, oz = 0, hx = 100, hz = 100; };  // Rechteck der Grundflaeche: Mittelpunktsversatz und halbe Kanten (Bounding-Box x/z skaliert + footprintBuffer)
+  std::map<std::string, Foot> footprint_cache;
+  struct Planet { float pos[3]; float r; };
+  std::vector<Planet> planets;  // fuer die Planetenumlaufbahn der Sternbasen (blaue Platzanzeige)
+  bool ghost_planet = false;
+  Foot FootOf(const std::string& odf) {
     auto it = footprint_cache.find(odf);
     if (it != footprint_cache.end()) return it->second;
-    float r = 100.0f;
+    Foot f;
     BznObject bo;
     bo.odf = odf;
     MapObjectInfo info;
     if (ResolveMapObject(bo, &info) && !info.sod.empty() && EnsureSpawnModel(info.sod)) {
       const float* b = spawn_models[info.sod].bounds;
       const float sc = info.scale > 0 ? info.scale : 1.0f;
-      r = 0.5f * std::sqrt((b[3] - b[0]) * (b[3] - b[0]) + (b[5] - b[2]) * (b[5] - b[2])) * sc;
+      f.ox = 0.5f * (b[0] + b[3]) * sc; f.oz = 0.5f * (b[2] + b[5]) * sc;
+      f.hx = 0.5f * (b[3] - b[0]) * sc; f.hz = 0.5f * (b[5] - b[2]) * sc;
     }
     float buf = 0;
     if (const OdfObject* od = odf_lib ? odf_lib->Get(odf) : nullptr) od->GetFloat("footprintBuffer", &buf);
-    footprint_cache[odf] = r + buf;
-    return r + buf;
+    f.hx += buf; f.hz += buf;
+    footprint_cache[odf] = f;
+    return f;
+  }
+  float FootprintRadius(const std::string& odf) { const Foot f = FootOf(odf); return std::hypot(f.hx, f.hz); }
+
+  // Kreis gegen Rechteck (Mitte cx,cz, halbe Kanten hx,hz)
+  static bool CircleHitsRect(float x, float z, float r, float cx, float cz, float hx, float hz) {
+    const float dx = std::max(std::fabs(x - cx) - hx, 0.0f), dz = std::max(std::fabs(z - cz) - hz, 0.0f);
+    return dx * dx + dz * dz < r * r;
   }
 
-  // Ist der Bauplatz frei? why bekommt den Grund (leer = frei). x/z im GL-System.
-  bool SiteCheck(const std::string& odf, float x, float z, std::string* why) {
-    const float rn = FootprintRadius(odf);
-    ghost_r = rn;
-    for (const Blocker& b : build_blockers) {
-      const float dx = x - b.pos[0], dz = z - b.pos[2];
-      if (std::sqrt(dx * dx + dz * dz) < b.r + rn) { *why = "Zu nah an einem Mond, Planeten, Nebel oder Asteroidenfeld."; return false; }
-    }
+  // Ist der Bauplatz frei? why bekommt den Grund (leer = frei). x/z im GL-System. Setzt ghost_planet (Sternbasis in Planetennaehe).
+  bool SiteCheck(const std::string& odf, float x, float z, std::string* why, bool for_ghost = false) {
+    const Foot fn = FootOf(odf);
+    if (for_ghost) { ghost_r = std::hypot(fn.hx, fn.hz); ghost_planet = false; }
+    const float cx = x + fn.ox, cz = z + fn.oz;
+    bool ok = true;
+    for (const Blocker& b : build_blockers)
+      if (CircleHitsRect(b.pos[0], b.pos[2], b.r, cx, cz, fn.hx, fn.hz)) { *why = "Zu nah an einem Mond, Planeten, Nebel oder Asteroidenfeld."; ok = false; break; }
     for (const Spawned& o : spawned) {
+      if (!ok) break;
       if (o.dying || (o.movable && !o.has_site)) continue;
-      float ro = 0;
+      Foot fo;
       float ox = o.st.pos[0], oz = o.st.pos[2];
-      if (!o.movable) ro = FootprintRadius(o.odf_l.empty() ? ToLowerAscii(o.odf) : o.odf_l);
-      else { ro = FootprintRadius(o.site_odf); ox = o.site[0]; oz = o.site[2]; }  // Bauplatz eines anderen Bauschiffs
-      const float dx = x - ox, dz = z - oz;
-      if (std::sqrt(dx * dx + dz * dz) < ro + rn) { *why = "Zu nah an einer Station."; return false; }
+      if (!o.movable) fo = FootOf(o.odf_l.empty() ? ToLowerAscii(o.odf) : o.odf_l);
+      else { fo = FootOf(o.site_odf); ox = o.site[0]; oz = o.site[2]; }  // Bauplatz eines anderen Bauschiffs
+      if (std::fabs(cx - (ox + fo.ox)) < fn.hx + fo.hx && std::fabs(cz - (oz + fo.oz)) < fn.hz + fo.hz) { *why = "Zu nah an einer Station."; ok = false; }
     }
-    if (!path_grid.Empty() && path_grid.Blocked(x, -z)) { *why = "Gesperrtes Gebiet."; return false; }
-    return true;
+    if (ok && !path_grid.Empty() && path_grid.Blocked(x, -z)) { *why = "Gesperrtes Gebiet."; ok = false; }
+    // Armada.exe 0x516170..0x516481: Sternbasen in Planetennaehe (Rand des Planeten hoechstens 300 = Global 0x6000d0 entfernt) zeigen blau (planet_build)
+    if (ok && odf_lib) {
+      std::string cls;
+      if (const OdfObject* od = odf_lib->Get(odf)) od->GetString("classLabel", &cls);
+      if (cls == "starbase")
+        for (const Planet& p : planets)
+          if (for_ghost && std::hypot(x - p.pos[0], z - p.pos[2]) - p.r <= 300.0f) ghost_planet = true;
+    }
+    return ok;
   }
 
   // SOD-Name einer ODF (aus der ODF aufgeloest), leer wenn es keins gibt
@@ -3587,6 +3608,12 @@ struct Game::Impl {
       static const int kHud[5] = {0, 3, 2, 1, 0};  // Rasse des Auswahlfelds (federation, borg, romulan, klingon, random) -> HudRace (Federation, Klingon, Romulan, Borg)
       hud_race = kHud[std::min(4, std::max(0, sl.race))];
       human_team = sl.team;
+      for (const Spawned& o : spawned) {  // Hat die Karte Startobjekte fuer den Spieler, bestimmt deren Rasse (Praefix f/k/r/b der ODF) die Oberflaeche (im Original fuer "Karteneinheiten" geprueft)
+        if (o.team != sl.team || o.odf.empty()) continue;
+        const char ch = static_cast<char>(std::tolower(static_cast<unsigned char>(o.odf[0])));
+        if (ch == 'f') hud_race = 0; else if (ch == 'k') hud_race = 1; else if (ch == 'r') hud_race = 2; else if (ch == 'b') hud_race = 3; else continue;
+        break;
+      }
       LoadHud();
       if (camera(1, c)) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
       map_dist = 2200.0f;
@@ -4374,13 +4401,49 @@ void Game::OnFrame(double dt) {
         s.effects.DrawMesh(proj, view * Mat4::Translation(g.pos[0], g.pos[1], g.pos[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
       }
     }
-    if (s.source && s.ghost_set && !s.build_armed.empty()) {  // Bauplatz-Vorschau: Quadrat in Groesse der Grundflaeche, gruen frei / rot gesperrt
-      std::vector<float> mesh;
-      const float r = s.ghost_r;
-      const float c[4][2] = {{-r, -r}, {r, -r}, {r, r}, {-r, r}}, uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-      for (int k : {0, 1, 2, 0, 2, 3}) { mesh.push_back(c[k][0]); mesh.push_back(0.0f); mesh.push_back(c[k][1]); mesh.push_back(uv[k][0]); mesh.push_back(uv[k][1]); }
-      const float tint[3] = {s.ghost_ok ? 0.2f : 1.0f, s.ghost_ok ? 1.0f : 0.2f, 0.2f};
-      s.effects.DrawMesh(proj, view * Mat4::Translation(s.ghost[0], s.ghost[1], s.ghost[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
+    if (s.source && s.ghost_set && !s.build_armed.empty()) {
+      // Platzanzeige nach dem Original (Armada.exe 0x516170 / 0x5162a0, Sprites gui_map.spr, Textur MBuild): belegte Zellen des Platzierungsrasters (50, STATION_PLACEMENT_GRID_SIZE)
+      // mit "footprint", das Rechteck der Grundflaeche des Objekts mit valid_build (gruen), invalid_build (rot) oder planet_build (blau: Sternbasis nahe eines Planeten).
+      auto quad = [&](std::vector<float>* mesh, float x0, float z0, float x1, float z1, const float uv[4]) {
+        const float c[4][2] = {{x0, z0}, {x1, z0}, {x1, z1}, {x0, z1}}, t[4][2] = {{uv[0], uv[1]}, {uv[2], uv[1]}, {uv[2], uv[3]}, {uv[0], uv[3]}};
+        for (int k : {0, 1, 2, 0, 2, 3}) { mesh->push_back(c[k][0]); mesh->push_back(0.0f); mesh->push_back(c[k][1]); mesh->push_back(t[k][0]); mesh->push_back(t[k][1]); }
+      };
+      auto sprite_uv = [&](const char* name, float uv[4], std::string* file) {
+        const SprSprite* sp = s.spr.FindSprite(name);
+        if (!sp || sp->ref_w <= 0 || sp->ref_h <= 0) return false;
+        uv[0] = sp->u / sp->ref_w; uv[1] = sp->v / sp->ref_h; uv[2] = (sp->u + sp->w) / sp->ref_w; uv[3] = (sp->v + sp->h) / sp->ref_h;
+        *file = sp->file;
+        return true;
+      };
+      const float white[3] = {1.0f, 1.0f, 1.0f};
+      float uv[4];
+      std::string file;
+      const Impl::Foot fn = s.FootOf(s.build_armed);
+      const float gx = s.ghost[0], gz = s.ghost[2];
+      if (sprite_uv("footprint", uv, &file)) {  // belegte Zellen in der Naehe
+        std::vector<float> mesh;
+        const float cell = 50.0f, reach = 1200.0f;
+        for (float cz = std::floor((gz - reach) / cell) * cell; cz < gz + reach; cz += cell)
+          for (float cx = std::floor((gx - reach) / cell) * cell; cx < gx + reach; cx += cell) {
+            const float mx = cx + 0.5f * cell, mz = cz + 0.5f * cell;
+            bool blocked = false;
+            for (const Impl::Blocker& b : s.build_blockers) if (std::hypot(mx - b.pos[0], mz - b.pos[2]) < b.r) { blocked = true; break; }
+            for (const Impl::Spawned& o : s.spawned) {
+              if (blocked) break;
+              if (o.dying || o.movable) continue;
+              const Impl::Foot fo = s.FootOf(o.odf_l.empty() ? ToLowerAscii(o.odf) : o.odf_l);
+              if (std::fabs(mx - (o.st.pos[0] + fo.ox)) < fo.hx && std::fabs(mz - (o.st.pos[2] + fo.oz)) < fo.hz) blocked = true;
+            }
+            if (blocked) quad(&mesh, cx, cz, cx + cell, cz + cell, uv);
+          }
+        if (!mesh.empty()) s.effects.DrawMesh(proj, view, mesh, file, white, 1.0f, *s.source);
+      }
+      if (sprite_uv(s.ghost_ok ? (s.ghost_planet ? "planet_build" : "valid_build") : "invalid_build", uv, &file)) {
+        std::vector<float> mesh;
+        const float cx = gx + fn.ox, cz = gz + fn.oz;
+        quad(&mesh, cx - fn.hx, cz - fn.hz, cx + fn.hx, cz + fn.hz, uv);
+        s.effects.DrawMesh(proj, view, mesh, file, white, 1.0f, *s.source);
+      }
     }
     if (s.source) {
       std::vector<float> mesh;

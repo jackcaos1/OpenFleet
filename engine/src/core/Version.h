@@ -3,5 +3,5 @@
 // Anzeige: "d<Build>" fuer Debug-Builds (z. B. d57), unten rechts im Hauptmenue.
 #define FLEET_VERSION_MAJOR 0
 #define FLEET_VERSION_MINOR 1
-#define FLEET_BUILD 96
+#define FLEET_BUILD 97
 #define FLEET_BUILD_KIND "d"   // d = Debug, r = Release

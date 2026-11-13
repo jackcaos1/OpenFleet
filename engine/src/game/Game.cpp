@@ -3531,7 +3531,7 @@ void Game::OnFrame(double dt) {
         if (!ok) continue;
         // Original (0x49abf0 / 0x49afe0): Balken 4 Pixel hoch bei y = oben - 5, Breite = Rechteckbreite + 1, Grund grau 0,2, Fuellung Rot -> Gruen (0,5 (1 - f), 0,5 f, 0)
         // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
-        const float ps = std::max(1.0f, H / 480.0f);
+        const float ps = std::max(1.0f, std::min(W / 640.0f, H / 480.0f));  // das Original rechnet in Pixeln eines 640 x 480-Fensters
         const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
         auto quad = [&](float x, float y, float w, float h, float r, float g, float b) {
           HudDraw d;
@@ -3549,7 +3549,16 @@ void Game::OnFrame(double dt) {
           const float f = sp.hp.crew / sp.hp.crew_max;
           const float dot = 7.0f * ps;
           const bool red = f <= sp.hp.race.crew_red, yellow = f <= sp.hp.race.crew_yellow;
-          quad(std::floor(x1), std::floor(y1) - 8.0f * ps, dot, dot, red ? 0.5f : (yellow ? 0.5f : 0.0f), red ? 0.0f : 0.5f, 0.0f);
+          HudDraw d;
+          float uv[4];
+          bool add = false;
+          if (s.hud_data.Sprite("select_crew_dot", &d.tex, uv, &add)) {  // runde Grafik fguib04 (14 x 14)
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = true;
+            d.x = std::floor(x1); d.y = std::floor(y1) - 8.0f * ps; d.w = dot; d.h = dot;
+            d.rgba[0] = red || yellow ? 0.5f : 0.0f; d.rgba[1] = red ? 0.0f : 0.5f; d.rgba[2] = 0.0f; d.rgba[3] = 1.0f;
+            dr.push_back(d);
+          }
         }
       }
       for (size_t i = 0; i < s.spawned.size(); ++i) {

@@ -3479,26 +3479,46 @@ void Game::OnFrame(double dt) {
           put("selection.22", px + h, py + h, q, q, 1.0f);
         }
       }
-      for (const Impl::Spawned& sp : s.spawned) {  // Schild-/Huellenbalken ueber beschaedigten oder ausgewaehlten Objekten
+      for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
         if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
-        const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
-        const float top[3] = {sp.st.pos[0], sp.st.pos[1] + rw, sp.st.pos[2]};
-        float px, py, pw;
-        if (!project(top, &px, &py, &pw)) continue;
-        const float bw = std::max(30.0f, rw * fy / pw * 1.6f), bh = std::max(3.0f, bw * 0.07f);
-        auto bar = [&](float y, float frac, float r, float g, float b) {
-          HudDraw bg;
-          bg.x = px - 0.5f * bw; bg.y = y; bg.w = bw; bg.h = bh;
-          bg.rgba[0] = bg.rgba[1] = bg.rgba[2] = 0.0f; bg.rgba[3] = 0.6f;
-          dr.push_back(bg);
-          HudDraw f = bg;
-          f.w = bw * std::max(0.0f, std::min(1.0f, frac));
-          f.rgba[0] = r; f.rgba[1] = g; f.rgba[2] = b; f.rgba[3] = 0.9f;
-          dr.push_back(f);
+        if (it == s.spawn_models.end()) continue;
+        // Bildschirmrechteck: die acht Ecken des Huellquaders projiziert (0x49a3f0), Minimum / Maximum
+        Mat4 sm, sr;
+        ShipMatrices(sp.st, sp.scale, &sm, &sr);
+        const float* bb = it->second.bounds;
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        bool ok = true;
+        for (int c = 0; c < 8 && ok; ++c) {
+          const float lc[3] = {(c & 1) ? bb[3] : bb[0], (c & 2) ? bb[4] : bb[1], (c & 4) ? bb[5] : bb[2]};
+          float wc[3], cx, cy, cw;
+          Impl::Xf(sm, lc, wc);
+          if (!project(wc, &cx, &cy, &cw)) { ok = false; break; }
+          x0 = std::min(x0, cx); x1 = std::max(x1, cx); y0 = std::min(y0, cy); y1 = std::max(y1, cy);
+        }
+        if (!ok) continue;
+        // Original (0x49abf0 / 0x49afe0): Balken 4 Pixel hoch bei y = oben - 5, Breite = Rechteckbreite + 1, Grund grau 0,2, Fuellung Rot -> Gruen (0,5 (1 - f), 0,5 f, 0)
+        // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
+        const float ps = std::max(1.0f, H / 480.0f);
+        const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
+        auto quad = [&](float x, float y, float w, float h, float r, float g, float b) {
+          HudDraw d;
+          d.x = x; d.y = y; d.w = w; d.h = h;
+          d.rgba[0] = r; d.rgba[1] = g; d.rgba[2] = b; d.rgba[3] = 1.0f;
+          d.additive = true;
+          dr.push_back(d);
         };
-        bar(py - bh * 2.5f, sp.hp.shield_frac(), 0.3f, 0.6f, 1.0f);
-        bar(py - bh * 1.2f + bh, sp.hp.crew_frac(), 0.3f, 0.9f, 0.3f);
+        if (sp.hp.shield_max > 0.1f) {
+          const float f = std::max(0.0f, std::min(1.0f, sp.hp.shield / sp.hp.shield_max));
+          quad(bx, by, bw, bh, 0.2f, 0.2f, 0.2f);
+          quad(bx, by, bw * f, bh, 0.5f * (1.0f - f), 0.5f * f, 0.0f);
+        }
+        if (sp.hp.crew_max > 0.0f) {
+          const float f = sp.hp.crew / sp.hp.crew_max;
+          const float dot = 7.0f * ps;
+          const bool red = f <= sp.hp.race.crew_red, yellow = f <= sp.hp.race.crew_yellow;
+          quad(std::floor(x1), std::floor(y1) - 8.0f * ps, dot, dot, red ? 0.5f : (yellow ? 0.5f : 0.0f), red ? 0.0f : 0.5f, 0.0f);
+        }
       }
       for (size_t i = 0; i < s.spawned.size(); ++i) {
         const Impl::Spawned& sp = s.spawned[i];

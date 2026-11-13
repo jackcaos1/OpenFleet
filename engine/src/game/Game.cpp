@@ -357,6 +357,10 @@ struct Game::Impl {
     std::vector<std::string> build_items;   // buildItem0..9
     int officer_gain = 0;                   // officerGain (Sternbasis / Upgrade)
     bool exit_freighter = false;
+    int dock_phase = 0;                     // 0 keine, 1 Kurve, 2 Vorrutschen, 3 Entladen (Phasen der Warteschlange, +0x67c)
+    float sp_p0[3] = {0, 0, 0}, sp_t0[3] = {0, 0, 0}, sp_p1[3] = {0, 0, 0}, sp_t1[3] = {0, 0, 0}, sp_t = 0;  // Hermite-Kurve zum Schlangenende
+    std::vector<unsigned> dq;               // Bergbaustation: Eingangswarteschlange (MiningQueueManager)
+    float dq_len = 0;                       // summierte Laenge der Schlange (2 x Radius je Schiff)
     float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
@@ -2269,7 +2273,7 @@ struct Game::Impl {
     std::vector<HoverObstacle> obs;
     for (Spawned& s : spawned) {
       if (!s.movable) continue;
-      if (s.exiting) continue;  // wird gerade aus Werft / Dock geschoben (StepExits)
+      if (s.exiting || s.dock_phase > 0) continue;  // wird gerade aus Werft / Dock geschoben (StepExits) oder folgt der Andockkurve
       const bool can_fly = CanFly(s);
       if (!can_fly) StopShip(&s.st);  // Antrieb ausgefallen oder Wrack: kein Kurs, nur Ausrollen
       if (s.hodf_ok) {
@@ -3087,6 +3091,17 @@ struct Game::Impl {
   // (gminebm: Schussabstand 1,5 s, Reichweite 120, minebm damageBase 15) die Ladung (maxScrap 150) fuellen, zurueck und mit der Rate der Station
   // (dilithiumTransferRate) entladen; Entladen nach der echten Station-Routine 0x45a910 (Menge = min(Ladung, Rate * dt), nur solange der Vorrat unter dem Hoechstwert liegt).
   void StepFreighters(float dt) {
+    for (Spawned& stn : spawned) {  // Schlangeneintraege zerstoerter Frachter entfernen (0x558240: nicht mehr aufloesbare Handles werden aus der Schlange genommen)
+      if (stn.dq.empty()) continue;
+      for (size_t k = stn.dq.size(); k-- > 0;) {
+        const int oi = FindById(stn.dq[k]);
+        if (oi < 0 || spawned[static_cast<size_t>(oi)].dying || !spawned[static_cast<size_t>(oi)].hp.alive()) {
+          if (oi >= 0) stn.dq_len = std::max(0.0f, stn.dq_len - 2.0f * RadiusOf(spawned[static_cast<size_t>(oi)]));
+          stn.dq.erase(stn.dq.begin() + static_cast<long>(k));
+        }
+      }
+      if (stn.dq.empty()) stn.dq_len = 0;
+    }
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
       if (!f.freighter || f.team <= 0 || f.derelict || f.dying || !f.hp.alive() || f.cargo_max <= 0 || f.exiting) continue;
@@ -3099,7 +3114,7 @@ struct Game::Impl {
         const float d = Dist3(st.st.pos, f.st.pos);
         if (d < bd) { bd = d; home = static_cast<int>(k); }
       }
-      if (home < 0) { f.fr_state = 0; continue; }
+      if (home < 0) { f.fr_state = 0; f.dock_phase = 0; continue; }  // Station weg: die Andockkurve endet, die Flugphysik uebernimmt wieder
       const Spawned& st = spawned[static_cast<size_t>(home)];
       auto release = [&]() {
         if (f.fr_moon >= 0 && f.fr_moon < static_cast<int>(moons.size()) && moons[static_cast<size_t>(f.fr_moon)].user == f.id) moons[static_cast<size_t>(f.fr_moon)].user = 0;
@@ -3109,8 +3124,19 @@ struct Game::Impl {
       if (f.fr_moon >= 0 && (f.fr_moon >= static_cast<int>(moons.size()) || exhausted(moons[static_cast<size_t>(f.fr_moon)]))) { release(); f.fr_moon = -1; }
       if (f.fr_moon < 0 && f.fr_state != 3 && f.fr_state != 4) {
         float md = 1e30f;
+        bool ai_team = false;
+        for (const AiTeam& at : ai_teams) ai_team = ai_team || at.team == f.team;
         for (size_t k = 0; k < moons.size(); ++k) {
           if (exhausted(moons[k])) continue;
+          if (ai_team) {  // 0x435010: nur fuer KI-Teams (Teamdatensatz +0xa8): ein Mond mit mindestens 3 anderen Frachtern im Umkreis 125 wird uebergangen
+            int crowd = 0;
+            for (const Spawned& o : spawned)
+              if (&o != &f && o.freighter && !o.dying && o.hp.alive()) {
+                const float dx = o.st.pos[0] - moons[k].pos[0], dy = o.st.pos[1] - moons[k].pos[1], dz = o.st.pos[2] - moons[k].pos[2];
+                if (dx * dx + dy * dy + dz * dz < 15625.0f) ++crowd;
+              }
+            if (crowd >= 3) continue;
+          }
           const float d = Dist3(moons[k].pos, f.st.pos);
           if (d < md && d < 100000.0f) { md = d; f.fr_moon = static_cast<int>(k); }
         }
@@ -3122,7 +3148,100 @@ struct Game::Impl {
       };
       const float srad = RadiusOf(st);
       const float room = f.cargo_max - f.cargo;
-      if (f.fr_state == 4) {  // angedockt: Entladen mit der Regel der Station (0x45a910); danach wieder von vorn
+      float hp_pos[3], hp_dir[3];
+      const bool have_dock = HardpointWorld(st, "dock", hp_pos, hp_dir);
+      Spawned& stw = spawned[static_cast<size_t>(home)];
+      if (have_dock && f.fr_state >= 3) {
+        // Andocken wie im Original (MiningQueueManager, Armada.exe 0x558240; Details docs/formats/economy.md): Warteschlange auf der Achse des Dock-Hardpoints,
+        // Hermite-Kurve zum Ende der Schlange, Vorrutschen entlang der Front, Entladen am Kopf, danach Ausfahrt ueber die Ausgabe-Warteschlange.
+        const float dl_ = std::sqrt(hp_dir[0] * hp_dir[0] + hp_dir[1] * hp_dir[1] + hp_dir[2] * hp_dir[2]);
+        float D[3] = {hp_dir[0] / std::max(1e-4f, dl_), hp_dir[1] / std::max(1e-4f, dl_), hp_dir[2] / std::max(1e-4f, dl_)};
+        float B[3], tail[3];
+        for (int k = 0; k < 3; ++k) B[k] = hp_pos[k] - D[k] * stw.dock_buffer;           // Basis: dockingBuffer hinter dem Dock
+        auto tail_of = [&](float len, float out[3]) { for (int k = 0; k < 3; ++k) out[k] = B[k] - D[k] * len; };
+        tail_of(stw.dq_len, tail);
+        const float r2 = 2.0f * RadiusOf(f);
+        if (f.fr_state == 3) {  // Anflug auf den Wartepunkt (Schlangenende minus 40, 0x556d30); naeher als tooCloseToTurn: einreihen (Schlange +2 Radius, Befehl 8, Phase 1)
+          float Q[3];
+          for (int k = 0; k < 3; ++k) Q[k] = tail[k] - D[k] * 40.0f;
+          const float dx = f.st.pos[0] - Q[0], dz = f.st.pos[2] - Q[2];
+          if (std::sqrt(dx * dx + dz * dz) < (f.hodf_ok ? f.hodf.tooCloseToTurn : 50.0f)) {
+            stw.dq.push_back(f.id);
+            stw.dq_len += r2;
+            float E[3];
+            tail_of(stw.dq_len, E);
+            const float d3 = Dist3(E, f.st.pos), k = 0.4f * d3;   // Konstante 0x5d21f8 = 0,4
+            float fwd[3];
+            ShipForward(f.st, fwd);
+            for (int c = 0; c < 3; ++c) { f.sp_p0[c] = f.st.pos[c]; f.sp_p1[c] = E[c]; f.sp_t0[c] = fwd[c] * k; f.sp_t1[c] = D[c] * k; }
+            f.sp_t = 0;
+            f.dock_phase = 1;
+            f.fr_state = 5;
+            f.st.has_target = false;
+            f.st.speed = 0;
+          } else {
+            go(Q);
+          }
+          continue;
+        }
+        const float speed = (f.hodf_ok ? f.hodf.impulseSpeed : 20.0f) * f.dock_factor;
+        auto move_front = [&]() {
+          float fwd[3];
+          ShipForward(f.st, fwd);
+          for (int k = 0; k < 3; ++k) f.st.pos[k] += fwd[k] * speed * dt;   // 0x465b50
+        };
+        if (f.fr_state == 5) {  // Phase 1: Hermite-Kurve (0x556650): Parameter waechst mit Geschwindigkeit dockingSpeedFactor x Impulsgeschwindigkeit
+          const float t = f.sp_t;
+          const float h00 = 2 * t * t * t - 3 * t * t + 1, h10 = t * t * t - 2 * t * t + t, h01 = -2 * t * t * t + 3 * t * t, h11 = t * t * t - t * t;
+          const float dh00 = 6 * t * t - 6 * t, dh10 = 3 * t * t - 4 * t + 1, dh01 = -6 * t * t + 6 * t, dh11 = 3 * t * t - 2 * t;
+          float der[3], mag = 0;
+          for (int c = 0; c < 3; ++c) { der[c] = dh00 * f.sp_p0[c] + dh10 * f.sp_t0[c] + dh01 * f.sp_p1[c] + dh11 * f.sp_t1[c]; mag += der[c] * der[c]; }
+          mag = std::max(1e-3f, std::sqrt(mag));
+          f.sp_t = std::min(1.0f, f.sp_t + speed * dt / mag);
+          const float u = f.sp_t;
+          const float g00 = 2 * u * u * u - 3 * u * u + 1, g10 = u * u * u - 2 * u * u + u, g01 = -2 * u * u * u + 3 * u * u, g11 = u * u * u - u * u;
+          for (int c = 0; c < 3; ++c) f.st.pos[c] = g00 * f.sp_p0[c] + g10 * f.sp_t0[c] + g01 * f.sp_p1[c] + g11 * f.sp_t1[c];
+          if (std::fabs(der[0]) + std::fabs(der[2]) > 1e-3f) { const float h[3] = {der[0], 0.0f, der[2]}; ShipFromForward(h, &f.st); }
+          f.st.speed = speed;
+          if (f.sp_t >= 1.0f) { f.dock_phase = 2; f.fr_state = 6; const float h[3] = {D[0], 0.0f, D[2]}; ShipFromForward(h, &f.st); }
+          continue;
+        }
+        if (f.fr_state == 6) {  // Phase 2: entlang der Front vorrutschen (Kopf: bis zum Dock-Hardpoint, sonst bis 40 + 2 Radien der Voranstehenden hinter die Basis)
+          const bool head = !stw.dq.empty() && stw.dq.front() == f.id;
+          float P[3];
+          if (head) { for (int k = 0; k < 3; ++k) P[k] = hp_pos[k]; }
+          else {
+            float acc = 0;
+            for (unsigned id : stw.dq) { if (id == f.id) break; const int oi = FindById(id); if (oi >= 0) acc += 2.0f * RadiusOf(spawned[static_cast<size_t>(oi)]); }
+            for (int k = 0; k < 3; ++k) P[k] = B[k] - D[k] * (40.0f + acc);
+          }
+          float fwd[3];
+          ShipForward(f.st, fwd);
+          const float dot = (P[0] - f.st.pos[0]) * fwd[0] + (P[1] - f.st.pos[1]) * fwd[1] + (P[2] - f.st.pos[2]) * fwd[2];
+          if (dot > 0) { move_front(); f.st.speed = speed; }
+          else { f.st.speed = 0; if (head) { f.fr_state = 7; f.dock_phase = 3; } }
+          continue;
+        }
+        if (f.fr_state == 7) {  // Phase 3: am Kopf entladen (MiningStation::Receive); fertig: Schlange verlassen, Ausfahrt ueber die Ausgabe-Warteschlange (+0x7c8)
+          TeamResources& r = Res(f.team);
+          if (r.dilithium < r.dilithium_max && f.cargo > 0) {
+            const float amt = std::min(f.cargo, std::max(1.0f, stw.transfer_rate) * dt);
+            f.cargo -= amt;
+            r.AddDilithium(amt);
+          }
+          if (f.cargo <= 0.001f || r.dilithium >= r.dilithium_max) {
+            if (f.cargo <= 0.001f) f.cargo = 0;
+            stw.dq.erase(std::remove(stw.dq.begin(), stw.dq.end(), f.id), stw.dq.end());
+            stw.dq_len = std::max(0.0f, stw.dq_len - r2);
+            f.dock_phase = 0;
+            f.fr_state = 0;
+            const size_t fi = i;
+            BeginExit(fi, stw, hp_pos, hp_dir, true);
+          }
+          continue;
+        }
+      }
+      if (f.fr_state == 4) {  // ohne Dock-Hardpoint: einfaches Entladen
         TeamResources& r = Res(f.team);
         if (r.dilithium < r.dilithium_max && f.cargo > 0) {
           const float amt = std::min(f.cargo, std::max(1.0f, st.transfer_rate) * dt);
@@ -3132,11 +3251,11 @@ struct Game::Impl {
         if (f.cargo <= 0.001f) { f.cargo = 0; f.fr_state = 0; }
         continue;
       }
-      if (f.fr_state == 3) {  // zur Station: andocken
+      if (f.fr_state == 3) {  // ohne Dock-Hardpoint: gerader Anflug
         float dx = f.st.pos[0] - st.st.pos[0], dz = f.st.pos[2] - st.st.pos[2];
         const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
         const float stand = srad + std::max(70.0f, st.dock_buffer);  // dockingBuffer
-        if (dl <= stand + (f.hodf_ok ? f.hodf.tooCloseToTurn : 40.0f)) { f.fr_state = 4; continue; }  // Klassenwert +0x208 = tooCloseToTurn der Physik-ODF (0x42b7f0)
+        if (dl <= stand + (f.hodf_ok ? f.hodf.tooCloseToTurn : 40.0f)) { f.fr_state = 4; continue; }
         const float tg[3] = {st.st.pos[0] + dx / dl * stand, 0.0f, st.st.pos[2] + dz / dl * stand};
         go(tg);
         continue;
@@ -5045,7 +5164,7 @@ std::string Game::DebugReport() const {
     if (ships + stations + freighters + armed == 0) continue;
     for (const Impl::Spawned& o : s.spawned)
       if (o.team == t && o.freighter && !o.dying) {
-        std::snprintf(buf, sizeof buf, "  freighter %u state %d cargo %.0f pos (%.0f,%.0f) target %d speed %.1f\n", o.id, o.fr_state, o.cargo, o.st.pos[0], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.speed);
+        std::snprintf(buf, sizeof buf, "  freighter %u state %d phase %d cargo %.0f pos (%.0f,%.1f,%.0f) target %d speed %.1f\n", o.id, o.fr_state, o.dock_phase, o.cargo, o.st.pos[0], o.st.pos[1], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.speed);
         out += buf;
       }
     for (const Impl::Spawned& o : s.spawned)

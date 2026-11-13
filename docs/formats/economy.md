@@ -117,3 +117,21 @@ Also not read: 0x435010's filter (which objects count as moons), the random wait
 - Not read: the spline construction (0x556ff0, 0x556ed0, 0x556fa0), the unloading trigger (MiningStation::Receive 0x45a910 is not called directly from the queue update), and the way out after unloading (presumably the same Output queue as above, order 24 afterwards).
 - Not read either: the filter of 0x435010 (which objects count as moons), what happens to docked freighters when their station is destroyed.
 - `process +0x114` set when a moon is exhausted is a random angle (0x5018c0 x pi x 0.5), not a waiting time (corrects the earlier note).
+
+## Docking in full (third pass, 13.11.2026, ported in Game.cpp StepFreighters)
+Geometry (MiningQueueManager, created in 0x45a420): the dock hardpoint HP with axis D (its front). The queue base B = HP - D x dockingBuffer (class +0x574, 70 for the mining stations); the queue is a straight line behind B along -D.
+`length` (+0x3c) is the sum of 2 x radius of all queued craft; the tail is `B - D x length`.
+- **Slot 0 (0x556d30), waiting point:** station position + tail - 40 x D (constant 40 at 0x5d3398).
+- **Mining routine:** when the freighter is within **tooCloseToTurn** (horizontal, class +0x208) of the waiting point it enqueues (slot 4, 0x556b40: length += 2 x radius, tail moved, craft appended) and gets order 8, which sets its phase (+0x67c) to 1.
+- **Phase 1, curve (slot 9 = 0x556ff0 builds it, 0x558240 / 0x556650 follow it):** cubic Hermite curve from the freighter's position S (tangent = its front x k) to the new tail E (tangent = D x k) with `k = 0.4 x |E - S|` (double 0x5d21f8).
+  Each frame the parameter t grows by `speed x dt / |P'(t)|` (speed = dockingSpeedFactor x maxForwardSpeed; a second limit with the physics value `yawRotationRate`, class +0x1f8, is applied as well, formula not decoded) and the position is the curve point; at t = 1 the craft's orientation is set along the curve and the phase becomes 2.
+- **Phase 2, creeping:** along its front axis (0x465b50, same speed). The head of the queue moves until `dot(HP - pos, front) <= 0`; every other craft stops at `B - D x (40 + sum of 2 x radius of the craft ahead)`, and only moves once the craft ahead has reached phase 2 or higher.
+  When the head arrives, slot 10 (0x557b20 -> `MiningStation` 0x45aa50) is called and the phase becomes 3.
+- **Phase 3, unloading (slot 11 = 0x557a40):** each frame `MiningStation::Receive` (0x45a910, transfer `dilithiumTransferRate` x dt as described above). Receive returns true when it can do nothing more (cargo empty, team full, wrong owner).
+  Then the craft is removed from the queue (length -= 2 x radius) and appended to the station's **Output queue** (+0x7c8, see "Leaving"), i.e. it leaves through the same dock hardpoint, finally order 24 (mine) again.
+- Craft handles that no longer resolve are dropped from the queue (0x558240 start).
+
+**Moon choice (0x435010):** the candidates come from a spatial query; for each: cast to the moon class, the owner's bit in the moon's visibility mask (+0xb8) must be set, health > 0. For **AI teams only** (team record byte +0xa8, which 0x472100 reads) the shroud cell at the moon must be above 1.0 and a moon with
+**3 or more other freighters within radius 125** (squared 15625, 0x5cab24) is skipped; human teams just take the nearest. The nearest remaining moon by squared 3D distance (0x4258b0) wins. Client: nearest moon, AI crowd rule included, no shroud (the client has none).
+
+**Station destroyed:** not found in the queue code. The docked freighter's order 8 handler (0x42af80) falls back to other orders when the partner station is gone; the client lets such freighters resume normal flight and pick another station.

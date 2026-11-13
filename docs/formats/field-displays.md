@@ -25,5 +25,14 @@ Status: first pass over `SelectionDisplay` (vtable 0x5ce2c8). Only what is state
 - **Colour constants (0x57fa40..):** 0x690b00 magenta, 0x690b10 cyan, 0x690b20 yellow, 0x690b30 blue, 0x690b40 green, 0x690b50 red, 0x690b60 white, 0x690b70 black.
 - Client (build 83): shield bar and crew dot follow this; the energy bar and the names are missing.
 
+## Target marker after a move order (0x4acdf0 creates, 0x4acb00 updates and draws; confirmed)
+- A move order adds ONE marker at the clicked point (position, size = `GRID_FX_MAX_SIZE` = 50, time stamp). There is no marker that stays on the target.
+- Every frame, for each marker: if more than `GRID_FX_GROWTH_INTERVAL` (0.01 s) passed since its last change, the time stamp is renewed and size = size x `GRID_FX_GROWTH_RATE` (0.83);
+  below `GRID_FX_MIN_SIZE` (2) the marker is removed (about 17 steps, one step per frame at most, so the duration depends on the frame rate).
+- Drawing: a square lying in the ground plane at the marker position, its four corners at distance `size` from the centre, turned by the angle `GRID_FX_ROTATION_SPEED` (2.0) x size /
+  `GRID_FX_MAX_SIZE` (radians; sin / cos of the angle), textured with `gridFXSprite` (`GgridFX`, material additive like the selection circle), colour white.
+- `GRID_FX_MIN_SEGMENTS` / `GRID_FX_MAX_SEGMENTS` (8 / 36) have no reader in the executable that could be found.
+- Client (build 84): follows this; the former permanent marker on the target was removed.
+
 Not read yet: the position and size of the shield / energy bars and crew dots relative to the rectangle, the use of the nine-part frame, the group number display, the target marker
-(`gridFXSprite`, config `GRID_FX_*`), the drag rectangle drawing, health bar thresholds.
+the drag rectangle drawing, health bar thresholds.

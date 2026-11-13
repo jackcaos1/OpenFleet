@@ -21,4 +21,4 @@ Things that could not be settled from the executable or the data files. Add a re
 - [x] Selection box: the rectangle is a debug display (switch 0x663c9c), not in the normal game (from the code).
 - [ ] Do names of selected ships appear above them (global 0x60c4b0 = 1 by default)? Where, and for which ships (own, all)?
 - [ ] Position and size of the shield / energy bars and crew dots over a selected ship; group number display.
-- [ ] Target marker after a move order (ring `gridFXSprite`, parameters `GRID_FX_*`): size and duration.
+- [ ] Target marker after a move order: a rotating square shrinking from size 50 to 2 (about 17 frames, duration depends on the frame rate); check shape and apparent duration.

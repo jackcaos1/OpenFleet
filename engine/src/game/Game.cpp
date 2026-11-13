@@ -393,6 +393,9 @@ struct Game::Impl {
     Shockwave sw;
   };
   std::vector<ShockInst> shockwaves;
+  // Zielmarker nach einem Bewegungsbefehl (Armada.exe 0x4acdf0 erzeugt, 0x4acb00 aktualisiert und zeichnet): Ort, Groesse (Start GRID_FX_MAX_SIZE = 50), Zeit der letzten Verkleinerung
+  struct GridFx { float pos[3]; float size; double last; };
+  std::vector<GridFx> gridfx;
   Rng rng;
   unsigned next_id = 1;
   // Hauptmenue vor dem Spiel
@@ -2315,6 +2318,11 @@ struct Game::Impl {
             s.auto_move = 0;
             SetShipTarget(&s.st, tg);
           }
+          GridFx g;
+          g.pos[0] = o[0] + d[0] * t; g.pos[1] = kTapPlaneY; g.pos[2] = o[2] + d[2] * t;
+          g.size = 50.0f;  // GRID_FX_MAX_SIZE
+          g.last = clock;
+          gridfx.push_back(g);
         }
       }
       move_armed = false;
@@ -3409,6 +3417,30 @@ void Game::OnFrame(double dt) {
       auto it = s.spawn_models.find(f.model);
       if (it != s.spawn_models.end() && it->second.sp) it->second.sp->Draw(proj, view * Mat4::Translation(f.pos[0], f.pos[1], f.pos[2]) * AxisAngle(f.axis, kFireballSpin * f.age), f.age, f.scale);
     }
+    if (s.source && !s.gridfx.empty()) {
+      // Original (0x4acb00): je Bild verkleinert sich jeder Marker um den Faktor GRID_FX_GROWTH_RATE (0,83), wenn seit der letzten Aenderung mehr als
+      // GRID_FX_GROWTH_INTERVAL (0,01 s) vergangen sind, und verschwindet unter GRID_FX_MIN_SIZE (2). Gezeichnet wird ein um den Winkel
+      // GRID_FX_ROTATION_SPEED x Groesse / GRID_FX_MAX_SIZE gedrehtes Quadrat mit den Eckpunkten im Abstand Groesse (Sprite gridFXSprite, additiv).
+      std::vector<float> mesh;
+      for (size_t gi = s.gridfx.size(); gi-- > 0;) {
+        Impl::GridFx& g = s.gridfx[gi];
+        if (s.clock - g.last > 0.01) {
+          g.last = s.clock;
+          g.size *= 0.83f;
+          if (g.size < 2.0f) { s.gridfx.erase(s.gridfx.begin() + static_cast<long>(gi)); continue; }
+        }
+        const float th = 2.0f * g.size / 50.0f, sn = std::sin(th), cs = std::cos(th), r = g.size;
+        const float c[4][2] = {{sn * r, cs * r}, {cs * r, -sn * r}, {-sn * r, -cs * r}, {-cs * r, sn * r}};
+        const float uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        mesh.clear();
+        for (int k : {0, 1, 2, 0, 2, 3}) {
+          mesh.push_back(c[k][0]); mesh.push_back(0.0f); mesh.push_back(c[k][1]);
+          mesh.push_back(uv[k][0]); mesh.push_back(uv[k][1]);
+        }
+        const float tint[3] = {1.0f, 1.0f, 1.0f};
+        s.effects.DrawMesh(proj, view * Mat4::Translation(g.pos[0], g.pos[1], g.pos[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
+      }
+    }
     if (s.source) {
       std::vector<float> mesh;
       for (const Impl::ShockInst& w : s.shockwaves) {
@@ -3531,14 +3563,6 @@ void Game::OnFrame(double dt) {
         if (project(foot, &px, &py, &pw)) {
           const float r = std::max(18.0f, rw * fy / pw);  // Pixel
           sprite("selectionCircle", px, py, 2.4f * r, 2.4f * r * squash, tint);
-          if (sp.st.has_target) {
-            const float tg[3] = {sp.st.target[0], 0.0f, sp.st.target[2]};
-            float tx, ty, tw;
-            if (project(tg, &tx, &ty, &tw)) {
-              const float rt = std::max(12.0f, rw * fy / tw);
-              sprite("gridFXSprite", tx, ty, 2.0f * rt, 2.0f * rt * squash, tint);
-            }
-          }
         }
       }
       if (!dr.empty()) s.hud_gl.Draw(dr, *s.source, s.width, s.height);

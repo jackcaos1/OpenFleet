@@ -1836,8 +1836,8 @@ static void TestSkirmish() {
   CHECK(lm.Get("other", "title") == "X");
   CHECK(lm.Get("other", "nothing", "fb") == "fb");
   SkirmishSettings s;
-  CHECK(s.v[kOptUnits] == 1);
-  CHECK(SkOptText(lm, s, kOptUnits) == "Minimal Units");
+  CHECK(s.v[kOptUnits] == 2);
+  CHECK(SkOptText(lm, s, kOptUnits) == "default_units_standard");  // Vorgabe: Standard Units (kein Eintrag im Test-Label: Schluessel als Rueckfall)
   CHECK(SkOptText(lm, s, kOptDilithium) == "3000");
   CHECK(SkResourceValue(lm, kOptDilithium, 0) == 3000);
   SkOptCycle(&s, kOptLock);

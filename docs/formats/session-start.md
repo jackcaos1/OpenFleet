@@ -52,3 +52,12 @@ Verified in the executable (GOG Armada.exe, addresses given) or in the data file
   start objects carry fixed prefixes (4hub: team 1 federation, team 4 borg). The client keeps the map's objects; the HUD race follows slot 1.
 - The placement test of the spiral (virtual call 0x443229, object class method); the client uses its own free-spot test.
 - The local player number of the human in a skirmish (assumed to be slot 1 = `Camera_1`).
+
+
+## Correction: default units setting (re-read 13.11.2026, Armada.exe 0x442f00, 0x442fd0, 0x4408b0, 0x53b5e8, 0x539bb4)
+- The settings value `+0x80` is **not** the combo index. The lobby combo (entries `default_units_map`, `_minimal`, `_standard`, `_super`) maps to the value: map -> 3, minimal -> 0, standard -> 1, super -> 2
+  (selection handler 0x53b5e8 .. 0x53b64b; display 0x539bb4 maps back). The constructor default 1 therefore means **Standard Units** (not minimal).
+- The race object holds three unit lists: +0x214 `minimalUnits1..9`, +0x2a4 `standardUnits1..9`, +0x334 `superUnits1..9` (loader 0x4442b0). Value 0 uses the first, 1 the second, 2 the third, 3 (map units) the second for teams without objects.
+- **Before** the start units are created, 0x442f00 deletes every craft whose owner team is not kept. Kept: team 0, teams above the map's player count, and (only for value 3, map units) the teams that have a player.
+  So with minimal / standard / super the map's own start objects of teams 1..N are **deleted** (also those of occupied slots) and replaced by the race list of the lobby race (0x442fd0, spiral around `Camera_<team>`);
+  with map units the occupied teams keep their map objects (their race decides, 0x440ac6) and unoccupied teams lose theirs. The earlier statement "teams that own objects get no units" only holds for map units.

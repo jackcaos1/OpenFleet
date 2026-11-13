@@ -3528,8 +3528,8 @@ struct Game::Impl {
   }
 
   void SkCreateStartUnits(const std::vector<char>& team_has_objects) {
-    const int mode = sk_set.v[kOptUnits];
-    if (mode == 0 || !odf_lib) return;
+    const int mode = sk_set.v[kOptUnits] == 0 ? 2 : sk_set.v[kOptUnits];  // 0x442fd0: Einstellungswert 3 ("Karteneinheiten") nimmt fuer Teams ohne Objekte die Standardliste
+    if (!odf_lib) return;
     const int n = SkSlots();
     for (int i = 0; i < n; ++i) {
       const SkSlot& sl = sk_slot[i];
@@ -3577,14 +3577,15 @@ struct Game::Impl {
     const int n = SkSlots();
     std::vector<char> has_objects(static_cast<size_t>(n), 0);
     int owned = 0;
-    for (Spawned& o : spawned) {
-      if (o.team < 1 || o.team > n) continue;
-      has_objects[static_cast<size_t>(o.team - 1)] = 1;
-    }
-    // Im Original geprueft (Nutzer): Startobjekte unbesetzter Plaetze werden nicht erzeugt.
+    // Armada.exe 0x442f00 (gelesen): Objekte der Spielerteams 1..N der Karte werden VOR dem Spielstart geloescht. Ausnahme nur bei "Karteneinheiten" (Wert 3): Teams mit Spieler
+    // behalten ihre Kartenobjekte. Bei Minimal / Standard / Super verschwinden also auch die Kartenobjekte besetzter Plaetze; danach legt 0x442fd0 fuer jeden besetzten Platz
+    // die Startliste der gewaehlten Rasse an (siehe docs/formats/session-start.md).
+    const bool map_units = sk_set.v[kOptUnits] == 0;
     for (size_t k = spawned.size(); k-- > 0;) {
       const int t = spawned[k].team;
-      if (t >= 1 && t <= n && sk_slot[t - 1].kind == 0) { UnstampStation(spawned[k]); spawned.erase(spawned.begin() + static_cast<long>(k)); }
+      if (t < 1 || t > n) continue;
+      if (map_units && sk_slot[t - 1].kind != 0) has_objects[static_cast<size_t>(t - 1)] = 1;
+      else { UnstampStation(spawned[k]); spawned.erase(spawned.begin() + static_cast<long>(k)); }
     }
     for (Spawned& o : spawned) {
       if (o.team < 1 || o.team > n || sk_slot[o.team - 1].kind == 0) continue;
@@ -3608,8 +3609,8 @@ struct Game::Impl {
       static const int kHud[5] = {0, 3, 2, 1, 0};  // Rasse des Auswahlfelds (federation, borg, romulan, klingon, random) -> HudRace (Federation, Klingon, Romulan, Borg)
       hud_race = kHud[std::min(4, std::max(0, sl.race))];
       human_team = sl.team;
-      for (const Spawned& o : spawned) {  // Hat die Karte Startobjekte fuer den Spieler, bestimmt deren Rasse (Praefix f/k/r/b der ODF) die Oberflaeche (im Original fuer "Karteneinheiten" geprueft)
-        if (o.team != sl.team || o.odf.empty()) continue;
+      for (const Spawned& o : spawned) {  // nur bei "Karteneinheiten" bestimmt die Rasse der Kartenobjekte die Oberflaeche (0x440ac6: Rasse des Spielers aus den Objekten); sonst gilt die gewaehlte Rasse
+        if (sk_set.v[kOptUnits] != 0 || o.team != sl.team || o.odf.empty()) continue;
         const char ch = static_cast<char>(std::tolower(static_cast<unsigned char>(o.odf[0])));
         if (ch == 'f') hud_race = 0; else if (ch == 'k') hud_race = 1; else if (ch == 'r') hud_race = 2; else if (ch == 'b') hud_race = 3; else continue;
         break;

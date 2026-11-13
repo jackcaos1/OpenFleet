@@ -3327,7 +3327,10 @@ struct Game::Impl {
     it.odf = odf;
     it.cost = CostOf(odf, sp.team);
     if (!sp.bq.Enqueue(it)) Message("Warteschlange voll (5).");
-    else Message(odf + " in der Warteschlange (" + std::to_string(sp.bq.Size()) + ").");
+    else {
+      UnitDef qu;
+      Message((odf_lib && LoadUnitDef(*odf_lib, odf, &qu) && !qu.unit_name.empty() ? qu.unit_name : odf) + " in der Warteschlange (" + std::to_string(sp.bq.Size()) + ").");
+    }
   }
 
   void CancelBuild() {
@@ -4527,6 +4530,27 @@ bool Game::DebugStartSkirmish(const std::string& map, bool ai_vs_ai) {
   if (ai_vs_ai) s.sk_slot[0].kind = 2;
   s.SkStart();
   return s.in_game;
+}
+
+std::string Game::DebugHumanBuild(const std::string& odf, int item) {
+  Impl& s = *impl_;
+  int idx = -1;
+  for (size_t i = 0; i < s.spawned.size(); ++i)
+    if (s.spawned[i].team == s.human_team && ToLowerAscii(s.spawned[i].odf) == ToLowerAscii(odf)) { idx = static_cast<int>(i); break; }
+  if (idx < 0) return "no such object";
+  s.SelectOnly(idx);
+  HudState st;
+  s.FillCommands(&st);
+  std::string out = "main page: build button " + std::string(st.control[9].action == UiAction::BuildMenu && st.control[9].enabled ? "yes" : "NO");
+  s.Dispatch(UiAction::BuildMenu);
+  HudState st2;
+  s.FillCommands(&st2);
+  int n = 0;
+  for (const HudCmd& c : st2.control) if (c.action >= UiAction::Build0 && c.action <= UiAction::Build9) ++n;
+  out += ", build page items " + std::to_string(n);
+  s.Dispatch(static_cast<UiAction>(static_cast<int>(UiAction::Build0) + item));
+  out += ", queue " + std::to_string(s.spawned[static_cast<size_t>(idx)].bq.Size());
+  return out;
 }
 
 std::string Game::DebugReport() const {

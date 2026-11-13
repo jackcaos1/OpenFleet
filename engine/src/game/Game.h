@@ -78,6 +78,8 @@ class Game {
   // Entwicklungshilfe (Desktop, ohne Eingabe): Skirmish auf der Karte starten (Platz 1 als Computer, wenn ai_vs_ai) und den Zustand als Text ausgeben.
   bool DebugStartSkirmish(const std::string& map, bool ai_vs_ai);
   std::string DebugReport() const;
+  // Menue-Weg des Spielers nachstellen: Objekt des eigenen Teams mit dieser ODF waehlen, Bauen-Seite oeffnen, Eintrag antippen; Rueckgabe: kurzer Befund
+  std::string DebugHumanBuild(const std::string& odf, int item);
 
 
   // Spielstand im Originalformat (nicht im Mehrspieler). SaveState: false, wenn gerade nichts zu speichern ist (Menue).

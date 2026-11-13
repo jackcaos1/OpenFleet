@@ -54,3 +54,6 @@ Things that could not be settled from the executable or the data files. Add a re
 ## Build 97
 - Placement display now follows the original (Armada.exe 0x516170 / 0x5162a0): sprites `footprint`, `valid_build` (green), `invalid_build` (red), `planet_build` (blue: starbase within 300 of a planet's edge, Global 0x6000d0) from gui_map.spr / texture MBuild; occupied cells of the 50 grid (STATION_PLACEMENT_GRID_SIZE) get the footprint tile, the object's footprint rectangle the status sprite. Not read: how the original computes the footprint rectangle (client: bounding box + footprintBuffer) and which cells it marks as occupied.
 - Start units and race on maps with start objects: superseded by the correction in docs/formats/session-start.md (map objects of player teams are deleted unless "Map Units"; default setting is Standard Units). Please verify in the original: 2duel with Federation + Minimal gives a Federation construction ship only, and the default combo shows "Standard Units".
+
+## Build 99
+- Mining station delivers a free freighter (verified in the code, see economy.md). Please check in the original: freighter appears at the station right when it is finished, its crew and the station's crew values, whether the AI then builds fewer freighters.

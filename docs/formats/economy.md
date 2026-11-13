@@ -66,3 +66,12 @@ Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew
   Each bee gets a 0xb8-byte record built by 0x519010 and registered with 0x5194a0 (manager 0x67f6c0). The per-frame bee behaviour is 0x518250 (about 860 lines, not read).
 - The placeholder object (`mconstph.odf`, class `constPlaceholder`, `is_starbase`, footprint) is created at the build hardpoint transform; `BuildingEffect` manager (global 0x67f4a8, update 0x50c950 / 0x50caa0) draws the growing structure; both not read.
 - Client build 95/96 shows an invented version (growing model, six orbiting bees, beams). A faithful port needs its own session.
+
+## Free freighter with a mining station (verified, Armada.exe 0x457e40 / 0x45a830)
+- At the end of a construction (0x457e40, after the completion routine 0x45cdf0 created the building) the code tests the class flag `0x200000` of the new object (set in the `MiningStation` constructor at 0x45a3fd)
+  and calls `MiningStation::CreateFreighter` (0x45a830). No resources are paid for it.
+- 0x45a830 creates the craft class named by the mining station's ODF `freighterName` (looked up with 0x46b380, created with 0x46b590) at the world transform of the station's dock hardpoint
+  (hardpoint handle +0x7cc, set in 0x45a420 from the class's docking hardpoint name, fallback: model root), owner = the station's owner (+0x194), registers it with the world and with the
+  station's queue manager (+0x7c8, OutputQueueManager), sets craft state 8 with the station as partner (0x46eb70) and subtracts the freighter's crew (+0x4d8, crewCost 100) from the station's crew (0x467570).
+- Client: `OnBuildEvent` (Game.cpp) does the same: free freighter at the SOD node `dock`, station crew reduced by the freighter's crew. Open: the exact meaning of craft state 8, the exit path through the output queue,
+  and the default dock hardpoint name when the ODF has none (all four mining models have a node `dock`).

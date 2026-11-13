@@ -3008,6 +3008,30 @@ struct Game::Impl {
         if (spawned.size() > before) {
           Spawned& ns = spawned.back();
           if (ns.starbase_cls && ns.officer_gain > 0) { r.officers_max += ns.officer_gain; r.officers += ns.officer_gain; }  // 0x45f530
+          // Armada.exe 0x457f15 -> 0x45a830 (MiningStation::CreateFreighter, Klassenmerkmal 0x200000): jede fertige Bergbaustation bringt gratis einen Frachter ihrer Rasse (freighterName)
+          // mit, erzeugt an ihrem Dock-Hardpoint (SOD-Knoten "dock", sonst Wurzel), Besitzer = Besitzer der Station, ohne Kosten. Die Besatzung des Frachters (crewCost) wird der Station abgezogen (0x467570).
+          if (ns.mining_stn) {
+            std::string fr;
+            if (const OdfObject* mo = odf_lib ? odf_lib->Get(ns.odf_l.empty() ? ToLowerAscii(ns.odf) : ns.odf_l) : nullptr) mo->GetString("freighterName", &fr);
+            fr = ToLowerAscii(fr);
+            if (fr.size() > 4 && fr.compare(fr.size() - 4, 4, ".odf") == 0) fr.resize(fr.size() - 4);
+            if (!fr.empty()) {
+              const size_t si = spawned.size() - 1;
+              float dock[3] = {0, 0, 0};
+              auto sm = spawn_models.find(spawned[si].sod);
+              if (sm != spawn_models.end())
+                for (const ModelHardpoint& mh : sm->second.hardpoints)
+                  if (mh.name == "dock") { for (int k = 0; k < 3; ++k) dock[k] = mh.pos[k]; break; }
+              Mat4 dm, dr;
+              ShipMatrices(spawned[si].st, spawned[si].scale, &dm, &dr);
+              float wp[3];
+              Xf(dm, dock, wp);
+              if (SpawnAt(fr, team, wp, false, false)) {
+                spawned[si].hp.crew = std::max(0.0f, spawned[si].hp.crew - spawned.back().hp.crew);
+                if (!quiet) Message("Dilithium-Frachter wird mit der Station geliefert.");
+              }
+            }
+          }
           if (!quiet) Message(what + " fertig.");
         }
         break;

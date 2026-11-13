@@ -135,3 +135,18 @@ Geometry (MiningQueueManager, created in 0x45a420): the dock hardpoint HP with a
 **3 or more other freighters within radius 125** (squared 15625, 0x5cab24) is skipped; human teams just take the nearest. The nearest remaining moon by squared 3D distance (0x4258b0) wins. Client: nearest moon, AI crowd rule included, no shroud (the client has none).
 
 **Station destroyed:** not found in the queue code. The docked freighter's order 8 handler (0x42af80) falls back to other orders when the partner station is gone; the client lets such freighters resume normal flight and pick another station.
+
+## Docking: remaining details (fourth pass, 13.11.2026)
+- **Class field names** of the craft class (loader 0x45fea0): +0x1ec `borgPhysics` flag, +0x1f0 `impulseSpeed`, +0x1f4 `warpSpeed`, +0x1f8 `yawRotationRate`, +0x1fc `dockingSpeedFactor`, +0x200 `braccelControlStiffness`, +0x208 `tooCloseToTurn`.
+  The craft object's +0x4a8 is initialised from class +0x1f0 (0x461899), i.e. the impulse speed (changeable through 0x462d80 / 0x458960). So the movement of 0x465b50 and the curve speed are **dockingSpeedFactor x impulseSpeed**, as ported.
+  (My earlier remark that +0x4a8 was `maxForwardSpeed` was wrong: that name belongs to the class field +0x4a4 of the hover derivation.)
+- **Curve speed limit decoded (0x558240 phase 1):** the helper functions are `0x558990` = P'(t) = 3 c3 t^2 + 2 c2 t + c1, `0x558a30` = P''(t) = 6 c3 t + 2 c2, `0x558930` = cross product, `0x450210` = norm, `0x4502b0` = divide by a scalar, `0x425300` = multiply, `0x450f40` = normalise.
+  The curvature is `kappa = |P' x P''| / |P'|^3`; the parameter step is `min(dt x yawRotationRate / (kappa x |P'|), dockingSpeedFactor x impulseSpeed x dt / |P'|)`: the craft never turns faster than its yaw rate. Ported.
+  The curve coefficients are set by 0x5569a0 in power form: c0 = P0, c1 = T0, c2 = 3 (P1 - P0) - 2 T0 - T1, c3 = 2 (P0 - P1) + T0 + T1 (a cubic Hermite curve). 0x556650 advances t (clamped to 1) and sets the craft's orientation (virtual +0x14) from the normalised tangent (a different branch for craft with the borg flag +0x1ec).
+- **Axis:** the manager's vector at +0x24 is the hardpoint's **front** row of the world matrix (the 12-float matrix of 0x58c9d0: right, up, front, position); the queue base is `hardpoint - front x dockingBuffer`. The sign convention of the client (exit along +front, queue behind) therefore matches the data; the hardpoint matrix includes the station's rotation.
+- **Station state while a freighter is docked:** `0x45aa50` (called when a freighter reaches the head, and with 0 at the end) stores the docked freighter's handle at station +0x7d0 (`dockedShip`), starts the station's animation state 0x10 (0x58c750) and, when the owner is the local player, triggers a cinematic request (0x47aef0, the shot director).
+  `0x45a7d0` switches the station's `oreglow` sprite node (class +0x570) on while `dockedShip` is set.
+  Not in the client yet: the dock animation, the ore glow, the cinematic shot.
+- **Order 8 handler 0x42af80** only acts for AI teams (0x472100 reads the team flag +0xa8): for an AI freighter in the docked state with the right class flags it issues order 7 (slot 0x50). Human freighters are driven by the queue manager alone.
+- **Station destroyed:** the station destructor (0x45ac30 -> 0x45a6d0) tears down its managers; nothing in the queue code re-targets the freighters, and `0x46e820` (craft destruction) only deletes attached children of a specific class. What exactly happens to docked or queued freighters is therefore
+  not determinable from the static code alone; the client lets them resume normal flight.

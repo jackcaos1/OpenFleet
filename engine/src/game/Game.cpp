@@ -361,6 +361,7 @@ struct Game::Impl {
     float sp_p0[3] = {0, 0, 0}, sp_t0[3] = {0, 0, 0}, sp_p1[3] = {0, 0, 0}, sp_t1[3] = {0, 0, 0}, sp_t = 0;  // Hermite-Kurve zum Schlangenende
     std::vector<unsigned> dq;               // Bergbaustation: Eingangswarteschlange (MiningQueueManager)
     float dq_len = 0;                       // summierte Laenge der Schlange (2 x Radius je Schiff)
+    float yaw_rate = 1.0f;                  // yawRotationRate (Klassenwert +0x1f8, begrenzt die Kurvengeschwindigkeit beim Andocken)
     float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
@@ -1592,7 +1593,7 @@ struct Game::Impl {
     if (!u.physics_file.empty() && LoadPhysicsDef(*odf_lib, u.physics_file, &pd)) {
       s->fp = FlightFromPhysics(pd);
       s->hodf_ok = LoadHoverOdf(*odf_lib, u.physics_file, &s->hodf);
-      if (const OdfObject* po = odf_lib->Get(u.physics_file)) po->GetFloat("dockingSpeedFactor", &s->dock_factor);
+      if (const OdfObject* po = odf_lib->Get(u.physics_file)) { po->GetFloat("dockingSpeedFactor", &s->dock_factor); po->GetFloat("yawRotationRate", &s->yaw_rate); }
       // Nur Schiffe bewegen sich: Stationen, Plattformen und Kartenobjekte haben teils ebenfalls eine physics-Datei.
       static const char* const kFixed[] = {"starbase", "shipyard", "pod", "planet_obj", "background_obj", "nebula_obj", "wormhole_obj", "cannon", "areacannon",
                                            "sensor", "launcher", "areamissile", "detectcloak", "toggleweapon", "upgrade", "scrap", "fireballexplode", "shockwavexplode"};
@@ -3192,16 +3193,24 @@ struct Game::Impl {
         };
         if (f.fr_state == 5) {  // Phase 1: Hermite-Kurve (0x556650): Parameter waechst mit Geschwindigkeit dockingSpeedFactor x Impulsgeschwindigkeit
           const float t = f.sp_t;
-          const float h00 = 2 * t * t * t - 3 * t * t + 1, h10 = t * t * t - 2 * t * t + t, h01 = -2 * t * t * t + 3 * t * t, h11 = t * t * t - t * t;
-          const float dh00 = 6 * t * t - 6 * t, dh10 = 3 * t * t - 4 * t + 1, dh01 = -6 * t * t + 6 * t, dh11 = 3 * t * t - 2 * t;
-          float der[3], mag = 0;
-          for (int c = 0; c < 3; ++c) { der[c] = dh00 * f.sp_p0[c] + dh10 * f.sp_t0[c] + dh01 * f.sp_p1[c] + dh11 * f.sp_t1[c]; mag += der[c] * der[c]; }
-          mag = std::max(1e-3f, std::sqrt(mag));
-          f.sp_t = std::min(1.0f, f.sp_t + speed * dt / mag);
+          // Kurve in Potenzform (0x5569a0): c0 = P0, c1 = T0, c2 = 3 (P1 - P0) - 2 T0 - T1, c3 = 2 (P0 - P1) + T0 + T1; P' = 3 c3 t^2 + 2 c2 t + c1 (0x558990), P'' = 6 c3 t + 2 c2 (0x558a30)
+          float c2[3], c3[3], d1[3], d2[3];
+          for (int c = 0; c < 3; ++c) {
+            c2[c] = 3 * (f.sp_p1[c] - f.sp_p0[c]) - 2 * f.sp_t0[c] - f.sp_t1[c];
+            c3[c] = 2 * (f.sp_p0[c] - f.sp_p1[c]) + f.sp_t0[c] + f.sp_t1[c];
+            d1[c] = 3 * c3[c] * t * t + 2 * c2[c] * t + f.sp_t0[c];
+            d2[c] = 6 * c3[c] * t + 2 * c2[c];
+          }
+          const float mag = std::max(1e-3f, std::sqrt(d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2]));
+          const float cx = d1[1] * d2[2] - d1[2] * d2[1], cy = d1[2] * d2[0] - d1[0] * d2[2], cz = d1[0] * d2[1] - d1[1] * d2[0];
+          const float kappa = std::sqrt(cx * cx + cy * cy + cz * cz) / (mag * mag * mag);   // Kruemmung |P' x P''| / |P'|^3 (0x558930, 0x4502b0, 0x450210)
+          // Schritt = min(dt x yawRotationRate / (Kruemmung x |P'|), dockingSpeedFactor x Impulsgeschwindigkeit x dt / |P'|) (0x558240, Phase 1)
+          const float step_turn = kappa > 1e-6f ? dt * f.yaw_rate / (kappa * mag) : 1e9f, step_speed = speed * dt / mag;
+          f.sp_t = std::min(1.0f, f.sp_t + std::min(step_turn, step_speed));
           const float u = f.sp_t;
           const float g00 = 2 * u * u * u - 3 * u * u + 1, g10 = u * u * u - 2 * u * u + u, g01 = -2 * u * u * u + 3 * u * u, g11 = u * u * u - u * u;
           for (int c = 0; c < 3; ++c) f.st.pos[c] = g00 * f.sp_p0[c] + g10 * f.sp_t0[c] + g01 * f.sp_p1[c] + g11 * f.sp_t1[c];
-          if (std::fabs(der[0]) + std::fabs(der[2]) > 1e-3f) { const float h[3] = {der[0], 0.0f, der[2]}; ShipFromForward(h, &f.st); }
+          if (std::fabs(d1[0]) + std::fabs(d1[2]) > 1e-3f) { const float h[3] = {d1[0], 0.0f, d1[2]}; ShipFromForward(h, &f.st); }
           f.st.speed = speed;
           if (f.sp_t >= 1.0f) { f.dock_phase = 2; f.fr_state = 6; const float h[3] = {D[0], 0.0f, D[2]}; ShipFromForward(h, &f.st); }
           continue;

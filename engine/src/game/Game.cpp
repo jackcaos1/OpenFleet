@@ -423,7 +423,7 @@ struct Game::Impl {
   int scene_hidden_count = 0;
   std::map<std::string, SpawnModel> spawn_models;
   int selected = -1, spawn_team = 1;
-  int sym_mode = 1;      // Symbolansicht fuer Schiffe/Stationen in der Ferne: 0 aus, 1 Fraktionslogo, 2 Drahtgitter
+  int sym_mode = 2;      // Symbolansicht fuer Schiffe/Stationen in der Ferne: fest Drahtgitter (0 aus und 1 Fraktionslogo sind nicht mehr waehlbar)
   float sym_px = 48.0f;  // unterhalb dieses Bildschirmdurchmessers (Pixel) wird das Symbol gezeigt
   MarkerRenderer sel_markers;
   MarkerRenderer grid_markers;  // Orientierungsgitter in der Ebene des ausgewaehlten Objekts
@@ -1150,7 +1150,6 @@ struct Game::Impl {
                    {"Lagesensor steuert Ansicht (folgt)", ""},
                    {"Alternative GUI-Anordnung (folgt)", ""},
                    {tap_moves ? "Bewegen per Antippen: an" : "Bewegen per Antippen: aus", "@adv_move"},
-                   {std::string("Symbolansicht: ") + (sym_mode == 0 ? "aus" : sym_mode == 1 ? "Fraktionslogo" : "Drahtgitter"), "@sym"},
                    {std::string("Symbol-Schwelle: ") + std::to_string(static_cast<int>(sym_px)) + " px", "@sympx"},
                    {HoverWorld().obstacle_avoidance ? "Hindernisvermeidung: an" : "Hindernisvermeidung: aus (Original)", "@adv_avoid"},
                    {"<  Zur\xC3\xBC" "ck", "@options"}};
@@ -1283,7 +1282,6 @@ struct Game::Impl {
     else if (key == "@zin") zoom = std::min(30.0f, zoom * 1.25f);
     else if (key == "@zout") zoom = std::max(0.2f, zoom / 1.25f);
     else if (key == "@reset") { zoom = 1.0f; map_yaw = 0.6f; map_pitch = 0.8f; }
-    else if (key == "@sym") { sym_mode = (sym_mode + 1) % 3; OpenMenu(MenuKind::Advanced); }
     else if (key == "@sympx") { sym_px = sym_px >= 160.0f ? 16.0f : sym_px * 1.5f; OpenMenu(MenuKind::Advanced); }
     else if (key == "@hudrace") { hud_race = (hud_race + 1) % kHudRaceCount; LoadHud(); Message(std::string("HUD: ") + HudRaceName(static_cast<HudRace>(hud_race))); }
     else if (key == "@folder") { if (host) host->RequestDataFolder(); }
@@ -3364,7 +3362,7 @@ void Game::OnFrame(double dt) {
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
-    struct SymItem { float p[3]; int team; std::string wire; bool sel; };
+    struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
     std::vector<SymItem> syms;
     std::vector<char> sym_inst(s.scene.instances.size(), 0);
     const Mat4 sym_pv = proj * view;
@@ -3385,7 +3383,7 @@ void Game::OnFrame(double dt) {
         const float ip[3] = {im[12], im[13], im[14]};
         if (sym_small(ip, s.map_radius[static_cast<size_t>(inst.model)] * isc)) {
           sym_inst[ii] = 1;
-          syms.push_back({{ip[0], ip[1], ip[2]}, inst.team, ToLowerAscii(s.map.objects[static_cast<size_t>(inst.object)].odf), false});
+          syms.push_back({{ip[0], ip[1], ip[2]}, inst.team, ToLowerAscii(s.map.objects[static_cast<size_t>(inst.object)].odf), false, nullptr});
           continue;
         }
       }
@@ -3403,7 +3401,7 @@ void Game::OnFrame(double dt) {
       auto it = s.spawn_models.find(sp.sod);
       if (it == s.spawn_models.end() || !it->second.r) continue;
       if (sym_small(sp.st.pos, it->second.radius * sp.scale)) {
-        syms.push_back({{sp.st.pos[0], sp.st.pos[1], sp.st.pos[2]}, sp.team, ToLowerAscii(sp.odf), sp.sel});
+        syms.push_back({{sp.st.pos[0], sp.st.pos[1], sp.st.pos[2]}, sp.team, ToLowerAscii(sp.odf), sp.sel, &sp});
         continue;
       }
       Mat4 m, r;
@@ -3480,57 +3478,8 @@ void Game::OnFrame(double dt) {
         d.rgba[0] = d.rgba[1] = d.rgba[2] = tint;
         dr.push_back(d);
       };
-      for (const SymItem& sy : syms) {  // Symbolansicht: kamerazugewandtes Sprite in Teamfarbe
-        float px, py, pw;
-        if (!project(sy.p, &px, &py, &pw)) continue;
-        const float sz = 0.0225f * H;
-        const float* c = kMapTeamColors[sy.team >= 0 && sy.team < 9 ? sy.team : 0];
-        auto put = [&](const std::string& name, float x, float y, float w, float h, float a) {
-          HudDraw d;
-          float uv[4];
-          bool add = false;
-          if (!s.hud_data.Sprite(name.c_str(), &d.tex, uv, &add)) return;
-          d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
-          d.additive = add;
-          d.x = x - 0.5f * w; d.y = y - 0.5f * h; d.w = w; d.h = h;
-          d.rgba[0] = c[0]; d.rgba[1] = c[1]; d.rgba[2] = c[2]; d.rgba[3] = a;
-          dr.push_back(d);
-        };
-        if (s.sym_mode == 2) for (int i = 1; i <= 5; ++i) put(sy.wire + "w" + std::to_string(i), px, py, sz * 1.4f, sz * 1.4f, 1.0f);
-        else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
-          static const char* kIcon[4] = {"federation_icon", "klingon_icon", "romulan_icon", "borg_icon"};
-          const char ch = sy.wire.empty() ? 'f' : sy.wire[0];
-          const int ri = ch == 'k' ? 1 : ch == 'r' ? 2 : ch == 'b' ? 3 : ch == 'f' ? 0 : (s.hud_race & 3);
-          put(kIcon[ri], px, py, sz * 1.46f, sz, 1.0f);
-        }
-        if (sy.sel) {  // Auswahlecken (GCselect, 3x3-Rahmen)
-          const float h = 0.5f * sz * 1.5f, q = 22.0f * std::max(1.0f, H / 700.0f);
-          put("selection.00", px - h, py - h, q, q, 1.0f);
-          put("selection.20", px + h, py - h, q, q, 1.0f);
-          put("selection.02", px - h, py + h, q, q, 1.0f);
-          put("selection.22", px + h, py + h, q, q, 1.0f);
-        }
-      }
-      for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
-        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
-        auto it = s.spawn_models.find(sp.sod);
-        if (it == s.spawn_models.end()) continue;
-        // Bildschirmrechteck: die acht Ecken des Huellquaders projiziert (0x49a3f0), Minimum / Maximum
-        Mat4 sm, sr;
-        ShipMatrices(sp.st, sp.scale, &sm, &sr);
-        const float* bb = it->second.bounds;
-        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-        bool ok = true;
-        for (int c = 0; c < 8 && ok; ++c) {
-          const float lc[3] = {(c & 1) ? bb[3] : bb[0], (c & 2) ? bb[4] : bb[1], (c & 4) ? bb[5] : bb[2]};
-          float wc[3], cx, cy, cw;
-          Impl::Xf(sm, lc, wc);
-          if (!project(wc, &cx, &cy, &cw)) { ok = false; break; }
-          x0 = std::min(x0, cx); x1 = std::max(x1, cx); y0 = std::min(y0, cy); y1 = std::max(y1, cy);
-        }
-        if (!ok) continue;
-        // Original (0x49abf0 / 0x49afe0): Balken 4 Pixel hoch bei y = oben - 5, Breite = Rechteckbreite + 1, Grund grau 0,2, Fuellung Rot -> Gruen (0,5 (1 - f), 0,5 f, 0)
-        // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
+      // Schildbalken und Besatzungspunkt zu einem Bildschirmrechteck (x0, y0, x1, y1) eines Schiffs oder Symbols
+      auto ship_bars = [&](const Impl::Spawned& sp, float x0, float y0, float x1, float y1) {
         const float ps = std::max(1.0f, std::min(W / 640.0f, H / 480.0f));  // das Original rechnet in Pixeln eines 640 x 480-Fensters
         const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
         // Balken als Sprite select_shield_bar (weisser Streifen, getoent); die Fuellung zeigt nur den Anteil f der Grafik (Original 0x597a70)
@@ -3568,6 +3517,63 @@ void Game::OnFrame(double dt) {
             dr.push_back(d);
           }
         }
+      };
+      for (const SymItem& sy : syms) {  // Symbolansicht: kamerazugewandtes Sprite in Teamfarbe
+        float px, py, pw;
+        if (!project(sy.p, &px, &py, &pw)) continue;
+        const float sz = 0.0225f * H;
+        const float* c = kMapTeamColors[sy.team >= 0 && sy.team < 9 ? sy.team : 0];
+        auto put = [&](const std::string& name, float x, float y, float w, float h, float a) {
+          HudDraw d;
+          float uv[4];
+          bool add = false;
+          if (!s.hud_data.Sprite(name.c_str(), &d.tex, uv, &add)) return;
+          d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+          d.additive = add;
+          d.x = x - 0.5f * w; d.y = y - 0.5f * h; d.w = w; d.h = h;
+          d.rgba[0] = c[0]; d.rgba[1] = c[1]; d.rgba[2] = c[2]; d.rgba[3] = a;
+          dr.push_back(d);
+        };
+        if (s.sym_mode == 2) {
+          for (int i = 1; i <= 5; ++i) put(sy.wire + "w" + std::to_string(i), px, py, sz * 1.4f, sz * 1.4f, 1.0f);
+          if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
+            ship_bars(*sy.ship, px - 0.7f * sz, py - 0.7f * sz, px + 0.7f * sz, py + 0.7f * sz);
+        } else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
+          static const char* kIcon[4] = {"federation_icon", "klingon_icon", "romulan_icon", "borg_icon"};
+          const char ch = sy.wire.empty() ? 'f' : sy.wire[0];
+          const int ri = ch == 'k' ? 1 : ch == 'r' ? 2 : ch == 'b' ? 3 : ch == 'f' ? 0 : (s.hud_race & 3);
+          put(kIcon[ri], px, py, sz * 1.46f, sz, 1.0f);
+        }
+        if (sy.sel) {  // Auswahlecken (GCselect, 3x3-Rahmen)
+          const float h = 0.5f * sz * 1.5f, q = 22.0f * std::max(1.0f, H / 700.0f);
+          put("selection.00", px - h, py - h, q, q, 1.0f);
+          put("selection.20", px + h, py - h, q, q, 1.0f);
+          put("selection.02", px - h, py + h, q, q, 1.0f);
+          put("selection.22", px + h, py + h, q, q, 1.0f);
+        }
+      }
+      for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
+        if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
+        auto it = s.spawn_models.find(sp.sod);
+        if (it == s.spawn_models.end()) continue;
+        if (sym_small(sp.st.pos, it->second.radius * sp.scale)) continue;  // Symbolansicht zeichnet die Balken selbst
+        // Bildschirmrechteck: die acht Ecken des Huellquaders projiziert (0x49a3f0), Minimum / Maximum
+        Mat4 sm, sr;
+        ShipMatrices(sp.st, sp.scale, &sm, &sr);
+        const float* bb = it->second.bounds;
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        bool ok = true;
+        for (int c = 0; c < 8 && ok; ++c) {
+          const float lc[3] = {(c & 1) ? bb[3] : bb[0], (c & 2) ? bb[4] : bb[1], (c & 4) ? bb[5] : bb[2]};
+          float wc[3], cx, cy, cw;
+          Impl::Xf(sm, lc, wc);
+          if (!project(wc, &cx, &cy, &cw)) { ok = false; break; }
+          x0 = std::min(x0, cx); x1 = std::max(x1, cx); y0 = std::min(y0, cy); y1 = std::max(y1, cy);
+        }
+        if (!ok) continue;
+        // Original (0x49abf0 / 0x49afe0): Balken 4 Pixel hoch bei y = oben - 5, Breite = Rechteckbreite + 1, Grund grau 0,2, Fuellung Rot -> Gruen (0,5 (1 - f), 0,5 f, 0)
+        // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
+        ship_bars(sp, x0, y0, x1, y1);
       }
       for (size_t i = 0; i < s.spawned.size(); ++i) {
         const Impl::Spawned& sp = s.spawned[i];
@@ -3577,6 +3583,7 @@ void Game::OnFrame(double dt) {
         const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
         const float foot[3] = {sp.st.pos[0], 0.0f, sp.st.pos[2]};  // Ring liegt auf der Gitterebene unter dem Objekt
         float px, py, pw;
+        if (sym_small(sp.st.pos, rw)) continue;  // Symbolansicht: Auswahl durch die Ecken am Symbol, kein Ring
         if (project(foot, &px, &py, &pw)) {
           const float r = std::max(18.0f, rw * fy / pw);  // Pixel
           sprite("selectionCircle", px, py, 2.4f * r, 2.4f * r * squash, tint);

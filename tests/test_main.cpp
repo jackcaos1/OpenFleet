@@ -30,6 +30,8 @@
 #include "game/HoverShip.h"
 #include "game/MenuLayout.h"
 #include "game/PathGrid.h"
+#include "game/Skirmish.h"
+#include "formats/LabelMap.h"
 #include "io/ZipSource.h"
 #include "io/Inflate.h"
 #include "io/OverlaySource.h"
@@ -1672,6 +1674,40 @@ static void TestNoPathStops() {
   CHECK(!ss.has_target);
 }
 
+
+static void TestSkirmish() {
+  using namespace fleet;
+  LabelMap lm;
+  const int n = lm.Parse("# kommentar\r\nmultiplayer_setup {\r\n\t+ title\t\t{GAME SETUP}\r\n\t+ sd_value_1\t{3000}\r\n\t+ default_units_minimal\t{Minimal Units}\r\n}\r\n"
+                         "other {\n + title {X}\n}\n");
+  CHECK(n == 4);
+  CHECK(lm.Get("multiplayer_setup", "title") == "GAME SETUP");
+  CHECK(lm.Get("other", "title") == "X");
+  CHECK(lm.Get("other", "nothing", "fb") == "fb");
+  SkirmishSettings s;
+  CHECK(s.v[kOptUnits] == 1);
+  CHECK(SkOptText(lm, s, kOptUnits) == "Minimal Units");
+  CHECK(SkOptText(lm, s, kOptDilithium) == "3000");
+  CHECK(SkResourceValue(lm, kOptDilithium, 0) == 3000);
+  SkOptCycle(&s, kOptLock);
+  CHECK(s.v[kOptLock] == 1);
+  SkOptCycle(&s, kOptLock);
+  CHECK(s.v[kOptLock] == 0);
+  for (const SkOptDef& d : SkOptDefs()) CHECK(!d.keys.empty() && d.w > 0 && d.h > 0);
+  RaceDef r;
+  r.minimal_units = {"fconst.odf"};
+  r.standard_units = {"fconst.odf", "fconst.odf", "fbase.odf"};
+  r.super_units = {"bconst.odf", "fconst.odf", "kconst.odf", "rconst.odf"};
+  CHECK(SkStartUnits(r, 0).empty());
+  CHECK(SkStartUnits(r, 1).size() == 1 && SkStartUnits(r, 2).size() == 3 && SkStartUnits(r, 3).size() == 4);
+  float x = 0, z = 0;
+  SkSpiralPlace(100, 200, [](float, float) { return true; }, &x, &z);  // erster Punkt: r = 1 -> Winkel 2 pi, Abstand 120 in z
+  CHECK(std::fabs(x - 100.0f) < 0.01f && std::fabs(z - 320.0f) < 0.01f);
+  int tries = 0;
+  SkSpiralPlace(0, 0, [&](float, float) { ++tries; return false; }, &x, &z);  // nichts frei: Mittelpunkt nach r > 40 (etwa 469 Versuche)
+  CHECK(x == 0.0f && z == 0.0f && tries > 460 && tries < 480);
+}
+
 static void TestPathGrid() {
   using namespace fleet;
   PathGrid g;
@@ -1693,6 +1729,15 @@ static void TestPathGrid() {
     CHECK(path(2, false) > path(2, true));
     CHECK(path(198, true) == path(198, false));
     CHECK(path(2, true) <= 2);
+  }
+  {  // grosse Karte (Zahl der Ebenen folgt der Groesse, 0x408e30): Wege ueber die Grenzen der frueheren Spitzenzellen hinweg
+    PathGrid big; big.Init(0, 0, 12800, 3200, 50);
+    std::vector<PathPoint> q;
+    CHECK(big.FindPath({5649, 1505}, {6000, 1800}, &q));
+    CHECK(big.FindPath({1000, 500}, {12000, 2800}, &q));
+    CHECK(big.FindPath({12000, 2800}, {1000, 500}, &q));
+    big.StampField(6500, 1600);
+    CHECK(big.FindPath({5000, 1600}, {8000, 1600}, &q) && q.size() >= 2);
   }
   g.StampSquare(0, 0, 75);
   CHECK(g.Blocked(0, 0));
@@ -1774,6 +1819,7 @@ int main() {
   TestBzn();
   TestHoverSim();
   TestPathGrid();
+  TestSkirmish();
   TestMenuLayout();
   TestSaveGame();
   TestMapScene();

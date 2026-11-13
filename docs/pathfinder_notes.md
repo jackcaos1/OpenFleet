@@ -100,3 +100,10 @@ Aufwand grob: ~2500 Instruktionen + Hilfsklassen (Listen 0x406cb0/0x406c50/0x401
   die y-Werte (-28.5 / 105.5) gehoeren zu Boden und Decke). Der Planer (0x408e80/0x4093b0) rechnet Weite und Hoehe als Maximum minus Minimum in x und z. Der Client nahm bisher die Ausdehnung der
   Objekte plus 1000; jetzt gelten die Kartengrenzen (Rasterversatz und damit die Zellgrenzen des Quadtrees stimmen dadurch mit dem Original ueberein).
 
+
+## Number of tree levels (fix, build 71)
+The constructor 0x408e30 computes the number of quadtree levels from the map size: columns/rows = ceil(width/50), ceil(height/50) with the 1000 unit
+border included, levels = max(ceil(log2(columns)), ceil(log2(rows))) + 1; the root is a single cell. The port used a fixed 8 levels (cells of 6400), which
+only matches maps up to about 5400 units. On larger maps (2duel is 12800 x 3200) cells next to each other at the top level were never linked, so a ship
+could not find a path across the seam, "no path" stopped every move order. Now `PathGrid::Init` follows the constructor; the old oracle scenarios
+(map -1500..1500, 8 levels) still match, a test covers a large map. Not checked against an emulation of the original on large maps.

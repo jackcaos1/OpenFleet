@@ -73,6 +73,8 @@ class Game {
   int audio_rate() const;
   // Ton ein-/ausschalten (Musik und Effekte).
   void ToggleMute();
+  // Gitter in der Ebene y = 0 ein-/ausschalten (Original: Taste G).
+  void ToggleGrid();
 
 
   // Spielstand im Originalformat (nicht im Mehrspieler). SaveState: false, wenn gerade nichts zu speichern ist (Menue).

@@ -37,6 +37,10 @@ bool DecodeBmp(const uint8_t* d, size_t size, Image* out, std::string* err) {
       o[x * 4] = p[2];
       o[x * 4 + 1] = p[1];
       o[x * 4 + 2] = p[0];
+      if (p[2] == 255 && p[1] == 0 && p[0] == 255) {  // Farbschluessel Magenta (255, 0, 255) = durchsichtig (Ecken der Tastengrafiken)
+        o[x * 4 + 3] = 0;
+        out->has_alpha = true;
+      }
     }
   }
   return true;

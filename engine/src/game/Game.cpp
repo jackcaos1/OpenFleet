@@ -7,6 +7,7 @@
 #include <set>
 #include <array>
 #include <cstdio>
+#include <tuple>
 #include <ctime>
 #include <sstream>
 #include <cstdlib>
@@ -37,6 +38,8 @@
 #include "game/Cinematic.h"
 #include "game/Combat.h"
 #include "game/Shockwave.h"
+#include "game/Skirmish.h"
+#include "formats/LabelMap.h"
 #include "game/Teams.h"
 #include "game/Shell.h"
 #include "game/FireDemo.h"
@@ -148,6 +151,7 @@ struct Game::Impl {
   // --- Ton ---
   Mixer mixer;
   bool muted = false;
+  bool grid_visible = true;  // Original: Schalter 0x631de8, Standard an, Taste G (Input.map: grid_toggle)
   std::map<std::string, std::shared_ptr<const PcmClip>> clips;  // Name (klein) -> Clip; nullptr = nicht ladbar
   Mixer::VoiceId music_voice = Mixer::kNone;
   struct Ambient {
@@ -390,6 +394,9 @@ struct Game::Impl {
     Shockwave sw;
   };
   std::vector<ShockInst> shockwaves;
+  // Zielmarker nach einem Bewegungsbefehl (Armada.exe 0x4acdf0 erzeugt, 0x4acb00 aktualisiert und zeichnet): Ort, Groesse (Start GRID_FX_MAX_SIZE = 50), Zeit der letzten Verkleinerung
+  struct GridFx { float pos[3]; float size; double last; };
+  std::vector<GridFx> gridfx;
   Rng rng;
   unsigned next_id = 1;
   // Hauptmenue vor dem Spiel
@@ -417,7 +424,7 @@ struct Game::Impl {
   int scene_hidden_count = 0;
   std::map<std::string, SpawnModel> spawn_models;
   int selected = -1, spawn_team = 1;
-  int sym_mode = 1;      // Symbolansicht fuer Schiffe/Stationen in der Ferne: 0 aus, 1 Fraktionslogo, 2 Drahtgitter
+  int sym_mode = 2;      // Symbolansicht fuer Schiffe/Stationen in der Ferne: fest Drahtgitter (0 aus und 1 Fraktionslogo sind nicht mehr waehlbar)
   float sym_px = 48.0f;  // unterhalb dieses Bildschirmdurchmessers (Pixel) wird das Symbol gezeigt
   MarkerRenderer sel_markers;
   MarkerRenderer grid_markers;  // Orientierungsgitter in der Ebene des ausgewaehlten Objekts
@@ -499,9 +506,18 @@ struct Game::Impl {
 
   // Welches Modell ein Kartenobjekt zeigt. Das SOD steht in der ODF (baseName, sonst gleicher Name); Asteroidenfelder haben
   // keins (dont_load_SOD) und bestehen aus Einzelfelsen. Annahme: Felsen = Master1..8 (sscr_1.sod gibt es nicht).
+  // ODF-Schluessel hidden = 1: Das Original zeichnet solche Objekte nicht (Zeichenschleife 0x5b6620 prueft das Klassenbyte +0x1a4, ausser im Debug-Modus
+  // 0x68dc64+0x64) und nimmt sie weder in die Auswahl (0x46d236) noch in die Sichtbarkeit (0x471e37) auf.
+  bool IsHiddenOdf(const std::string& odf) const {
+    const OdfObject* od = odf_lib ? odf_lib->Get(ToLowerAscii(odf)) : nullptr;
+    bool h = false;
+    return od && od->GetBool("hidden", &h) && h;
+  }
+
   bool ResolveMapObject(const BznObject& o, MapObjectInfo* info) {
     const std::string l = ToLowerAscii(o.odf);
     if (l.empty()) return false;
+    if (IsHiddenOdf(l)) return false;
     std::string sod = l, cls;
     const OdfObject* od = odf_lib ? odf_lib->Get(l) : nullptr;
     bool dont_load = false;
@@ -806,6 +822,7 @@ struct Game::Impl {
     // Punkte fuer alles, was kein Modell hat (Asteroidenfelder, Lichter, nicht ladbare Modelle)
     std::vector<MarkerRenderer::Marker> pts;
     auto add_point = [&](const BznObject& o) {
+      if (IsHiddenOdf(o.odf)) return;  // Klassenschluessel hidden = 1 (z. B. dlight): im Original nicht gezeichnet (0x5b6620)
       MarkerRenderer::Marker m;
       m.pos[0] = o.pos[0];
       m.pos[1] = o.pos[1];
@@ -1134,7 +1151,6 @@ struct Game::Impl {
                    {"Lagesensor steuert Ansicht (folgt)", ""},
                    {"Alternative GUI-Anordnung (folgt)", ""},
                    {tap_moves ? "Bewegen per Antippen: an" : "Bewegen per Antippen: aus", "@adv_move"},
-                   {std::string("Symbolansicht: ") + (sym_mode == 0 ? "aus" : sym_mode == 1 ? "Fraktionslogo" : "Drahtgitter"), "@sym"},
                    {std::string("Symbol-Schwelle: ") + std::to_string(static_cast<int>(sym_px)) + " px", "@sympx"},
                    {HoverWorld().obstacle_avoidance ? "Hindernisvermeidung: an" : "Hindernisvermeidung: aus (Original)", "@adv_avoid"},
                    {"<  Zur\xC3\xBC" "ck", "@options"}};
@@ -1144,6 +1160,7 @@ struct Game::Impl {
                    {"Info zur Auswahl / Karte", "@info"},
                    {std::string("Teamfarbe wechseln (jetzt ") + std::to_string(spawn_team) + ")", "@team"},
                    {muted ? "Ton einschalten" : "Ton ausschalten", "@mute"},
+                   {grid_visible ? "Gitter ausschalten" : "Gitter einschalten", "@grid"},
                    {"Kamera naeher", "@zin"},
                    {"Kamera weiter weg", "@zout"},
                    {"Ansicht zuruecksetzen", "@reset"},
@@ -1262,10 +1279,10 @@ struct Game::Impl {
     else if (key == "@info") ShowSelectedInfo();
     else if (key == "@team") CycleSpawnTeam();
     else if (key == "@mute") ToggleMute();
+    else if (key == "@grid") ToggleGrid();
     else if (key == "@zin") zoom = std::min(30.0f, zoom * 1.25f);
     else if (key == "@zout") zoom = std::max(0.2f, zoom / 1.25f);
     else if (key == "@reset") { zoom = 1.0f; map_yaw = 0.6f; map_pitch = 0.8f; }
-    else if (key == "@sym") { sym_mode = (sym_mode + 1) % 3; OpenMenu(MenuKind::Advanced); }
     else if (key == "@sympx") { sym_px = sym_px >= 160.0f ? 16.0f : sym_px * 1.5f; OpenMenu(MenuKind::Advanced); }
     else if (key == "@hudrace") { hud_race = (hud_race + 1) % kHudRaceCount; LoadHud(); Message(std::string("HUD: ") + HudRaceName(static_cast<HudRace>(hud_race))); }
     else if (key == "@folder") { if (host) host->RequestDataFolder(); }
@@ -2300,6 +2317,11 @@ struct Game::Impl {
             s.auto_move = 0;
             SetShipTarget(&s.st, tg);
           }
+          GridFx g;
+          g.pos[0] = o[0] + d[0] * t; g.pos[1] = kTapPlaneY; g.pos[2] = o[2] + d[2] * t;
+          g.size = 50.0f;  // GRID_FX_MAX_SIZE
+          g.last = clock;
+          gridfx.push_back(g);
         }
       }
       move_armed = false;
@@ -2529,12 +2551,48 @@ struct Game::Impl {
   // --- Skirmish-Einstellung ---
   struct SkSlot { int kind = 0; int race = 0; int team = 1; };  // kind: 0 geschlossen, 1 Mensch, 2 Computer
   std::vector<std::string> sk_maps;    // Dateistamm; Eintrag 0 = leere Karte (nur zum Ausprobieren)
-  std::vector<int> sk_players;         // Startplaetze je Karte 
-  int sk_sel = 0, sk_first = 0, sk_res = 1;
+  int sk_sel = 0;
   SkSlot sk_slot[8];
-  std::vector<std::pair<int, int>> sk_starts;  // Startfelder der gewaehlten Karte
-  static constexpr const char* kSkRaces[4] = {"F\xC3\xB6" "deration", "Klingonen", "Romulaner", "Borg"};
-  static constexpr const char* kSkRes[3] = {"Wenig", "Normal", "Viel"};
+  std::vector<std::pair<int, int>> sk_starts;  // Startpunkte der gewaehlten Karte (Rasterpunkte der .mdf, keine Weltkoordinaten)
+  SkirmishSettings sk_set;
+  int sk_rel[8] = {2, 0, 0, 0, 0, 0, 0, 0};    // Beziehung des lokalen Spielers zu jedem Platz im Buendnis-Modus: 0 Feind, 1 neutral, 2 Freund (Vorgabe: Computer = Feind)
+  LabelMap labels;                             // label.map (Texte der Menues)
+  bool labels_loaded = false;
+  int sk_filter = 0;                           // Kartenauswahl: 0 alle, sonst Spielerzahl 8..2
+  int sk_pick = -1, sk_first = 0;              // Auswahl und erster sichtbarer Eintrag der gefilterten Liste
+  std::vector<int> sk_players;                 // Spielerzahl je Karte (StartLocations der .mdf)
+  // Reihenfolge des Rassen-Auswahlfelds im Original: federation, borg, romulan, klingon, random
+  static constexpr const char* kSkRaceKeys[5] = {"federation", "borg", "romulan", "klingon", "random"};
+  static constexpr char kSkRaceLetter[4] = {'f', 'b', 'r', 'k'};
+
+  void LoadLabels() {
+    if (labels_loaded || !source) return;
+    std::vector<uint8_t> b;
+    if (source->ReadFile("label.map", &b)) labels.Parse(std::string(b.begin(), b.end()));
+    labels_loaded = true;
+  }
+  std::string Lbl(const char* key, const char* fb = "") const { return labels.Get("multiplayer_setup", key, fb); }
+
+  int MdfPlayers(const std::string& name) const {
+    std::vector<uint8_t> b;
+    if (!source || !source->ReadFile("bzn/" + name + ".mdf", &b)) return 0;
+    std::istringstream in(std::string(b.begin(), b.end()));
+    std::string line;
+    while (std::getline(in, line)) {
+      std::istringstream ls(line);
+      std::string k, eq;
+      int n = 0;
+      ls >> k >> eq >> n;
+      if (k == "StartLocations") return n;
+    }
+    return 0;
+  }
+  std::vector<int> FilteredMaps() const {
+    std::vector<int> r;
+    for (size_t i = 0; i < sk_maps.size(); ++i)
+      if (sk_filter == 0 || (i < sk_players.size() && sk_players[i] == sk_filter)) r.push_back(static_cast<int>(i));
+    return r;
+  }
 
   void SkLoadMapInfo() {
     sk_starts.clear();
@@ -2553,6 +2611,7 @@ struct Game::Impl {
   }
 
   void SkEnter() {
+    LoadLabels();
     EnsureMapFiles();
     if (sk_maps.empty()) {
       std::vector<std::string> names;
@@ -2568,19 +2627,25 @@ struct Game::Impl {
           if (ToLowerAscii(f) == ToLowerAscii(n) + ".bzn") has_bzn = true;
         if (!has_bzn) continue;
         sk_maps.push_back(n);
-        sk_players.push_back(0);
+        sk_players.push_back(MdfPlayers(n));
       }
       sk_sel = sk_maps.empty() ? -1 : 0;
       for (int i = 0; i < 8; ++i) {
         sk_slot[i].kind = i == 0 ? 1 : (i == 1 ? 2 : 0);
-        sk_slot[i].race = i % 4;
+        sk_slot[i].race = i % 4;  // Vorgabe: Reihenfolge des Rassenfelds
         sk_slot[i].team = i + 1;
       }
     }
     SkLoadMapInfo();
+    SkMaxPlayersFromMap();
     shell_screen = ShellScreen::Skirmish;
   }
 
+  // "Maximale Spieler" folgt der Karte: Auswahlfeld = 8 - Zahl (0x539e44)
+  void SkMaxPlayersFromMap() {
+    const int n = sk_sel < 0 ? 8 : std::min(8, std::max(2, static_cast<int>(sk_starts.size())));
+    sk_set.v[kOptMaxPlayers] = 8 - n;
+  }
   int SkSlots() const { return sk_sel < 0 ? 8 : std::min<int>(8, static_cast<int>(sk_starts.size())); }
 
   SkirmishView SkView() const {
@@ -2591,26 +2656,89 @@ struct Game::Impl {
       if (i >= n) continue;
       const SkSlot& sl = sk_slot[i];
       sv.state = 1;
-      sv.name = i == 0 ? "Spieler" : (sl.kind == 2 ? "Computer" : "Geschlossen");
-      sv.race = sl.kind == 0 ? std::string("-") : std::string(kSkRaces[sl.race]);
-      sv.team = "Team " + std::to_string(sl.team);
+      sv.name = i == 0 ? "Player" : (sl.kind == 2 ? Lbl("computer_medium", "Computer") : Lbl("empty", "Empty Slot"));
+      sv.race = sl.kind == 0 ? std::string() : Lbl(kSkRaceKeys[std::min(4, std::max(0, sl.race))], kSkRaceKeys[std::min(4, std::max(0, sl.race))]);
+      sv.team = Lbl(("team_" + std::to_string(sl.team)).c_str(), ("Team " + std::to_string(sl.team)).c_str());
+      sv.relation = sk_rel[i];
+      sv.ready = sl.kind != 0;  // Computer sind immer bereit; der lokale Spieler gilt als bereit (Annahme fuer den Einzelspieler)
     }
-    const int vis = 12;
+    for (const SkOptDef& d : SkOptDefs()) {
+      SkirmishOptionView ov;
+      ov.id = static_cast<int>(d.id);
+      ov.x = d.x; ov.y = d.y; ov.w = d.w; ov.h = d.h;
+      ov.toggle = d.toggle;
+      ov.text = SkOptText(labels, sk_set, d.id);
+      v.options.push_back(ov);
+    }
+    v.alliance_mode = sk_set.v[kOptAlliance] == 1;
+    v.title = Lbl("title", "GAME SETUP");
+    v.col_name = Lbl("player_name", "Player Name");
+    v.col_side = Lbl("side", "Side");
+    v.col_team = Lbl("teams", "Teams");
+    v.col_game = Lbl("game_name", "Game Name");
+    v.label_messages = Lbl("messages", "Messages");
+    v.btn_prev = Lbl("previous_menu", "Previous Menu");
+    v.btn_launch = Lbl("launch", "LAUNCH");
+    v.btn_main = Lbl("main_menu", "Main Menu");
+    v.btn_select_map = Lbl("select_map", "SELECT MAP");
+    if (sk_sel >= 0) {
+      v.map_name = sk_maps[static_cast<size_t>(sk_sel)];
+      v.preview = "bzn/" + sk_maps[static_cast<size_t>(sk_sel)] + ".bmp";
+    }
+    if (sk_sel < 0) v.info = {"Im Spielordner fehlen Karten", "(bzn/*.bzn mit .mdf)."};
+    else
+      v.info = {"Karte: " + sk_maps[static_cast<size_t>(sk_sel)], "Spieler: " + std::to_string(n), "",
+                "Computer-Gegner: noch keine KI.", "Die meisten Optionen sind noch ohne Wirkung."};
+    // Kartenauswahl
+    const std::vector<int> fm = FilteredMaps();
     v.can_up = sk_first > 0;
-    v.can_down = sk_first + vis < static_cast<int>(sk_maps.size());
-    for (int k = 0; k < vis && sk_first + k < static_cast<int>(sk_maps.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(sk_first + k)]);
-    v.selected = sk_sel - sk_first >= 0 && sk_sel - sk_first < vis ? sk_sel - sk_first : -1;
-    v.title = sk_sel < 0 ? std::string("Keine Karten") : sk_maps[static_cast<size_t>(sk_sel)] + " - " + std::to_string(n) + " Spieler";
-    if (sk_sel >= 0) v.preview = "bzn/" + sk_maps[static_cast<size_t>(sk_sel)] + ".bmp";
-    v.res_label = std::string("Ressourcen: ") + kSkRes[sk_res];
-    if (sk_sel < 0) {
-      v.info = {"Im Spielordner fehlen Karten", "(bzn/*.bzn mit .mdf)."};
-    } else {
-      v.info = {"Karte: " + sk_maps[static_cast<size_t>(sk_sel)], "Startplaetze: " + std::to_string(n), "",
-                "Jeder aktive Platz startet mit Basis", "und einem Bauschiff (wie im Original).", "",
-                "Computer-Gegner stehen noch (keine KI).", "Ressourcen: noch ohne Wirkung."};
+    v.can_down = sk_first + 14 < static_cast<int>(fm.size());
+    for (int k = 0; k < 14 && sk_first + k < static_cast<int>(fm.size()); ++k) v.maps.push_back(sk_maps[static_cast<size_t>(fm[static_cast<size_t>(sk_first + k)])]);
+    v.selected = sk_pick - sk_first >= 0 && sk_pick - sk_first < 14 && sk_pick < static_cast<int>(fm.size()) ? sk_pick - sk_first : -1;
+    {
+      static const char* kF[8] = {"all_maps", "maximum_players_8", "maximum_players_7", "maximum_players_6", "maximum_players_5", "maximum_players_4", "maximum_players_3", "maximum_players_2"};
+      const int fi = sk_filter == 0 ? 0 : 9 - sk_filter;
+      v.filter_text = labels.Get("multiplayer_map_select", kF[std::min(7, std::max(0, fi))], kF[std::min(7, std::max(0, fi))]);
     }
+    v.btn_select = labels.Get("multiplayer_map_select", "select_map_button", "Select Map");
+    v.btn_cancel = labels.Get("multiplayer_map_select", "cancel_button", "Cancel");
     return v;
+  }
+
+  // Startobjekte (Armada.exe 0x442fd0): nur fuer Plaetze mit Spieler, deren Team in der Karte kein Objekt besitzt. Liste aus der Rassen-ODF nach "Standardeinheiten"
+  // (0 Karteneinheiten = nichts, 1 minimal, 2 Standard, 3 Super Side), Ort: Pfad Camera_<Team> oder Kartenmitte, dann Spirale (SkSpiralPlace).
+  void SkCreateStartUnits(const std::vector<char>& team_has_objects) {
+    const int mode = sk_set.v[kOptUnits];
+    if (mode == 0 || !odf_lib) return;
+    const int n = SkSlots();
+    for (int i = 0; i < n; ++i) {
+      const SkSlot& sl = sk_slot[i];
+      if (sl.kind == 0 || team_has_objects[static_cast<size_t>(i)]) continue;
+      int race = sl.race;
+      if (race >= 4) race = static_cast<int>(rng.U32() % 4u);  // Zufall
+      static const char* kRaceOdf[4] = {"fed", "borg", "rom", "kling"};
+      RaceDef rd;
+      if (!LoadRaceDef(*odf_lib, kRaceOdf[race], &rd)) continue;
+      // Startpunkt (Originalsystem, z wie in der Datei)
+      float cx = 0.5f * (map.bounds[0] + map.bounds[1]), cz = 0.5f * (map.bounds[4] + map.bounds[5]);
+      for (const BznPath& p : map.paths)
+        if (ToLowerAscii(p.name) == "camera_" + std::to_string(i + 1) && p.points.size() >= 3) { cx = p.points[0]; cz = p.points[2]; break; }
+      for (const std::string& u : SkStartUnits(rd, mode)) {
+        std::string odf = ToLowerAscii(u);
+        if (odf.size() > 4 && odf.compare(odf.size() - 4, 4, ".odf") == 0) odf.resize(odf.size() - 4);
+        float x = cx, z = cz;
+        SkSpiralPlace(cx, cz,
+                      [&](float px, float pz) {
+                        if (path_grid.Blocked(px, pz)) return false;
+                        for (const Spawned& o : spawned)
+                          if (Dist3(o.st.pos, std::array<float, 3>{px, 0.0f, -pz}.data()) < RadiusOf(o) + 60.0f) return false;
+                        return true;
+                      },
+                      &x, &z);
+        const float pos[3] = {x, 0.0f, -z};
+        SpawnAt(odf, sl.team, pos, false, false);
+      }
+    }
   }
 
   void SkStart() {
@@ -2622,31 +2750,43 @@ struct Game::Impl {
     if (idx < 0) return;
     LoadMap(idx);
     if (!map_loaded) return;
-    // Karte: nur Neutrales bleibt Kartenobjekt; angelegte Spielerobjekte sofort setzen
-    spawned.clear();
+    // Original (docs/formats/session-start.md): Startobjekte stehen in der Karte (BZN-Objekte mit Team N = Spieler N); Teams ohne Kartenobjekte bekommen die
+    // Startliste ihrer Rasse (SkCreateStartUnits). Die Kamera startet auf dem Pfad "Camera_<Spielernummer>". Nicht geprueft: Objekte nicht belegter Plaetze, ob
+    // die Rasse des Platzes Startobjekte der Karte ersetzt.
     selected = -1;
-    static const char kRace[4] = {'f', 'k', 'r', 'b'};
     const int n = SkSlots();
-    for (int i = 0; i < n; ++i) {
-      const SkSlot& sl = sk_slot[i];
-      if (sl.kind == 0) continue;
-      const std::string p(1, kRace[sl.race]);
-      const float cx = static_cast<float>(sk_starts[static_cast<size_t>(i)].first) * 50.0f + 25.0f;
-      const float cz = static_cast<float>(sk_starts[static_cast<size_t>(i)].second) * 50.0f + 25.0f;
-      const float base[3] = {cx, 0, cz};
-      SpawnAt(p + "base", sl.team, base, false, false);
-      // Originalstart (aus den Vorlagen in 4hub.bzn u. a.): je Spieler eine Basis und ein Bauschiff, Bauschiff etwa (+176, -151) neben der Basis
-      const float cpos[3] = {cx + 176.0f, 0, cz - 151.0f};
-      SpawnAt(p + "const", sl.team, cpos, false, false);
-      if (i == 0) {
-        hud_race = sl.race;
-        human_team = sl.team;
-        LoadHud();
-        map_target[0] = cx; map_target[1] = 0; map_target[2] = cz;
-        map_dist = 2200.0f;
-        zoom = 1.0f;
-      }
+    std::vector<char> has_objects(static_cast<size_t>(n), 0);
+    int owned = 0;
+    for (Spawned& o : spawned) {
+      if (o.team < 1 || o.team > n) continue;
+      has_objects[static_cast<size_t>(o.team - 1)] = 1;
     }
+    for (Spawned& o : spawned) {
+      if (o.team < 1 || o.team > n || sk_slot[o.team - 1].kind == 0) continue;
+      o.team = sk_slot[o.team - 1].team;
+      ++owned;
+    }
+    SkCreateStartUnits(has_objects);
+    auto camera = [&](int player, float out[3]) {
+      for (const BznPath& p : map.paths) {
+        if (ToLowerAscii(p.name) != "camera_" + std::to_string(player) || p.points.size() < 3) continue;
+        out[0] = p.points[0]; out[1] = 0.0f; out[2] = -p.points[2];  // Karte: z gespiegelt (GL); Originalhoehe (Decke + Boden) / 2 = 38,5, hier Kartenebene
+        return true;
+      }
+      return false;
+    };
+    {
+      const SkSlot& sl = sk_slot[0];
+      float c[3] = {0, 0, 0};
+      static const int kHud[5] = {0, 3, 2, 1, 0};  // Rasse des Auswahlfelds (federation, borg, romulan, klingon, random) -> HudRace (Federation, Klingon, Romulan, Borg)
+      hud_race = kHud[std::min(4, std::max(0, sl.race))];
+      human_team = sl.team;
+      LoadHud();
+      if (camera(1, c)) { map_target[0] = c[0]; map_target[1] = 0; map_target[2] = c[2]; }
+      map_dist = 2200.0f;
+      zoom = 1.0f;
+    }
+    if (owned == 0 && spawned.empty()) Message("Diese Karte hat keine Startobjekte; mit \"Karteneinheiten\" startet auch das Original ohne Einheiten.");
     in_game = true;
     Message("Skirmish: " + sk_maps[static_cast<size_t>(sk_sel)]);
   }
@@ -2658,20 +2798,41 @@ struct Game::Impl {
     else if (id == "back") shell_screen = shell_screen == ShellScreen::Skirmish ? ShellScreen::Multi : ShellScreen::Main;
     else if (id == "skirmish") SkEnter();
     else if (id == "start") SkStart();
-    else if (id == "quit") {
+    else if (id == "select_map") {
+      sk_pick = -1;
+      sk_first = 0;
+      shell_screen = ShellScreen::SkirmishMap;
+    } else if (id == "mapsel_cancel") shell_screen = ShellScreen::Skirmish;
+    else if (id == "mapsel_ok") {
+      const std::vector<int> fm = FilteredMaps();
+      if (sk_pick >= 0 && sk_pick < static_cast<int>(fm.size())) {
+        sk_sel = fm[static_cast<size_t>(sk_pick)];
+        SkLoadMapInfo();
+        SkMaxPlayersFromMap();
+      }
+      shell_screen = ShellScreen::Skirmish;
+    } else if (id == "mapsel_up") sk_first = std::max(0, sk_first - 6);
+    else if (id == "mapsel_down") sk_first = std::min(std::max(0, static_cast<int>(FilteredMaps().size()) - 14), sk_first + 6);
+    else if (id == "mapsel_filter") {
+      sk_filter = sk_filter == 0 ? 8 : (sk_filter == 2 ? 0 : sk_filter - 1);
+      sk_pick = -1;
+      sk_first = 0;
+    } else if (id.compare(0, 7, "mapsel:") == 0) sk_pick = sk_first + std::atoi(id.c_str() + 7);
+    else if (id.compare(0, 4, "opt:") == 0) {
+      const int o = std::atoi(id.c_str() + 4);
+      if (o >= 0 && o < kOptCount) SkOptCycle(&sk_set, static_cast<SkOpt>(o));
+    } else if (id == "quit") {
       if (host) host->RequestQuit();
-    } else if (id == "map_up") sk_first = std::max(0, sk_first - 6);
-    else if (id == "map_down") sk_first = std::min(std::max(0, static_cast<int>(sk_maps.size()) - 12), sk_first + 6);
-    else if (id == "res") sk_res = (sk_res + 1) % 3;
-    else if (id.compare(0, 4, "map:") == 0) {
-      sk_sel = sk_first + std::atoi(id.c_str() + 4);
-      SkLoadMapInfo();
     } else if (id.compare(0, 10, "slot_name:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i > 0 && i < 8) sk_slot[i].kind = sk_slot[i].kind == 2 ? 0 : 2;
     } else if (id.compare(0, 10, "slot_race:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
-      if (i >= 0 && i < 8) sk_slot[i].race = (sk_slot[i].race + 1) % 4;
+      if (i >= 0 && i < 8) sk_slot[i].race = (sk_slot[i].race + 1) % 5;
+    } else if (id.compare(0, 9, "slot_rel:") == 0) {
+      const int i = std::atoi(id.c_str() + 9);
+      const size_t c = id.find(':', 9);
+      if (i > 0 && i < 8 && c != std::string::npos) sk_rel[i] = std::atoi(id.c_str() + c + 1);
     } else if (id.compare(0, 10, "slot_team:") == 0) {
       const int i = std::atoi(id.c_str() + 10);
       if (i >= 0 && i < 8) sk_slot[i].team = sk_slot[i].team % 8 + 1;
@@ -2864,6 +3025,11 @@ struct Game::Impl {
     return st;
   }
 
+  void ToggleGrid() {
+    grid_visible = !grid_visible;
+    Message(grid_visible ? "Gitter an" : "Gitter aus");
+  }
+
   void ToggleMute() {
     muted = !muted;
     if (music_voice != Mixer::kNone) mixer.Set(music_voice, muted ? 0.0f : 0.45f, 0.0f);
@@ -3037,6 +3203,7 @@ void Game::ToggleMap() { impl_->ToggleMap(); }
 void Game::MixAudio(int16_t* out, int frames) { impl_->mixer.Mix(out, frames); }
 int Game::audio_rate() const { return impl_->mixer.output_rate(); }
 void Game::ToggleMute() { impl_->ToggleMute(); }
+void Game::ToggleGrid() { impl_->ToggleGrid(); }
 
 bool Game::SaveState(std::vector<uint8_t>* out) { return impl_->SaveToBytes(out); }
 void Game::LoadStateLater(std::vector<uint8_t> bytes) {
@@ -3084,6 +3251,7 @@ void Game::OnResize(int width, int height) {
 void Game::OnFrame(double dt) {
   Impl& s = *impl_;
   s.clock += dt;
+  if (dt > 0.3 && s.in_game) s.Message("Langer Frame: " + std::to_string(static_cast<int>(dt * 1000.0)) + " ms");  // Diagnose fuer "App reagiert nicht"
   s.ApplyPending();
   s.ui = BuildUiLayout(s.width, s.height, s.CurrentUiState());
   int bar = std::min(static_cast<int>(s.ui.bar_height), s.height - 1);
@@ -3096,7 +3264,7 @@ void Game::OnFrame(double dt) {
   glClearDepthf(1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   if (!s.in_game) {  // Hauptmenue
-    const SkirmishView skv = s.shell_screen == ShellScreen::Skirmish ? s.SkView() : SkirmishView();
+    const SkirmishView skv = (s.shell_screen == ShellScreen::Skirmish || s.shell_screen == ShellScreen::SkirmishMap) ? s.SkView() : SkirmishView();
     s.shell = BuildShell(s.shell_screen, s.width, s.height, s.shell_pressed, s.hud_ok ? &s.hud_data : nullptr, &skv);
     if (s.source) s.hud_gl.Draw(s.shell.draws, *s.source, s.width, s.height);
     return;
@@ -3164,32 +3332,39 @@ void Game::OnFrame(double dt) {
     }
     const Mat4 view = Mat4::Translation(0, 0, -dist) * rot * Mat4::Translation(-s.map_target[0], -s.map_target[1], -s.map_target[2]);
     const Mat4 proj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + 14000.0f);
-    {  // Orientierungsgitter (waagerechte Ebene) in Hoehe des Hauptobjekts, vor den Modellen gezeichnet
-      const float cell = 75.0f;  // etwa Groesse der Foederationsbasis (Fbase: ca. 75 Einheiten)
-      const float gy = 0.0f;     // Gitterebene = Kartenebene (y = 0)
-      const float ext = std::ceil(std::max(6000.0f, s.map_loaded && s.map_current >= 0 ? 3.0f * s.scene.extent : 0.0f) / cell) * cell;
-      const int half = static_cast<int>(ext / cell);
-      const float cx = s.map_current >= 0 ? std::round(s.scene.center[0] / cell) * cell : 0.0f;
-      const float cz = s.map_current >= 0 ? std::round(s.scene.center[2] / cell) * cell : 0.0f;
-      std::vector<MarkerRenderer::Marker> gm;
-      for (int i = -half; i <= half; ++i) {
-        MarkerRenderer::Marker m;
-        const float v = i % 5 == 0 ? 0.55f : 0.28f;  // weiss, jede fuenfte Linie heller
-        m.color[0] = m.color[1] = m.color[2] = v;
-        m.pos[1] = gy;
-        m.pos[0] = cx - ext; m.pos[2] = cz + cell * static_cast<float>(i);
-        m.dir[0] = 1; m.dir[1] = 0; m.dir[2] = 0;
-        gm.push_back(m);
-        m.pos[0] = cx + cell * static_cast<float>(i); m.pos[2] = cz - ext;
-        m.dir[0] = 0; m.dir[2] = 1;
+    if (s.grid_visible && s.map_loaded && s.map_current >= 0 && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {
+      // Original (docs/formats/gui-grid.md): Terrain-Objekt zeichnet Linien in der Ebene y = 0 ueber die Kartengrenzen des Kopfes, Zelle 100
+      // (Global 0x631cdc), Linienanfang an der Kartengrenze (nicht an Vielfachen von 100), Farbe ist NICHT belegt (siehe Doku), hier ein helles Grau als Schaetzung.
+      const float cell = 100.0f;
+      const float x0 = s.map.bounds[0], x1 = s.map.bounds[1], z0 = s.map.bounds[4], z1 = s.map.bounds[5];  // z im Originalsystem, GL: -z
+      const int nx = static_cast<int>((x1 - x0) / cell), nz = static_cast<int>((z1 - z0) / cell);
+      std::vector<MarkerRenderer::Marker> gm, gz;
+      MarkerRenderer::Marker m;
+      m.color[0] = 0.149f; m.color[1] = 0.128f; m.color[2] = 0.0f;
+      m.pos[1] = 0.0f;
+      for (int i = 0; i <= nx; ++i) {  // Linien konstanten x, von z0 bis z1
+        m.pos[0] = x0 + cell * static_cast<float>(i); m.pos[2] = -z0;
+        m.dir[0] = 0; m.dir[1] = 0; m.dir[2] = -1;
         gm.push_back(m);
       }
-      s.grid_markers.Set(gm, 2.0f * ext);
-      s.grid_markers.Draw(proj * view, 1.0f);
+      for (int j = 0; j <= nz; ++j) {  // Linien konstanten z, von x0 bis x1
+        m.pos[0] = x0; m.pos[2] = -(z0 + cell * static_cast<float>(j));
+        m.dir[0] = 1; m.dir[1] = 0; m.dir[2] = 0;
+        gz.push_back(m);
+      }
+      // Marker haben eine einheitliche Laenge: beide Richtungen getrennt zeichnen
+      // Abweichung vom Original (Sichtweite 10000, Entscheidung des Projektinhabers): wir zoomen weiter heraus, das Gitter soll immer ganz
+      // sichtbar sein; die hintere Ebene reicht deshalb bis ueber die Kartendiagonale hinaus.
+      const float diag = std::sqrt((x1 - x0) * (x1 - x0) + (z1 - z0) * (z1 - z0));
+      const Mat4 gproj = centre_shift * Mat4::Perspective(45.0f * kPi / 180.0f, aspect, std::max(2.0f, dist * 0.01f), dist + std::max(14000.0f, 1.5f * diag));
+      s.grid_markers.Set(gm, z1 - z0);
+      s.grid_markers.Draw(gproj * view, 1.0f);
+      s.grid_markers.Set(gz, x1 - x0);
+      s.grid_markers.Draw(gproj * view, 1.0f);
     }
     s.StepSpawned(static_cast<float>(std::min(dt, 0.1)));
     s.StepCombat(static_cast<float>(std::min(dt, 0.1)));
-    struct SymItem { float p[3]; int team; std::string wire; bool sel; };
+    struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
     std::vector<SymItem> syms;
     std::vector<char> sym_inst(s.scene.instances.size(), 0);
     const Mat4 sym_pv = proj * view;
@@ -3210,7 +3385,7 @@ void Game::OnFrame(double dt) {
         const float ip[3] = {im[12], im[13], im[14]};
         if (sym_small(ip, s.map_radius[static_cast<size_t>(inst.model)] * isc)) {
           sym_inst[ii] = 1;
-          syms.push_back({{ip[0], ip[1], ip[2]}, inst.team, ToLowerAscii(s.map.objects[static_cast<size_t>(inst.object)].odf), false});
+          syms.push_back({{ip[0], ip[1], ip[2]}, inst.team, ToLowerAscii(s.map.objects[static_cast<size_t>(inst.object)].odf), false, nullptr});
           continue;
         }
       }
@@ -3228,7 +3403,7 @@ void Game::OnFrame(double dt) {
       auto it = s.spawn_models.find(sp.sod);
       if (it == s.spawn_models.end() || !it->second.r) continue;
       if (sym_small(sp.st.pos, it->second.radius * sp.scale)) {
-        syms.push_back({{sp.st.pos[0], sp.st.pos[1], sp.st.pos[2]}, sp.team, ToLowerAscii(sp.odf), sp.sel});
+        syms.push_back({{sp.st.pos[0], sp.st.pos[1], sp.st.pos[2]}, sp.team, ToLowerAscii(sp.odf), sp.sel, &sp});
         continue;
       }
       Mat4 m, r;
@@ -3241,6 +3416,30 @@ void Game::OnFrame(double dt) {
     for (const Impl::Fireball& f : s.fireballs) {
       auto it = s.spawn_models.find(f.model);
       if (it != s.spawn_models.end() && it->second.sp) it->second.sp->Draw(proj, view * Mat4::Translation(f.pos[0], f.pos[1], f.pos[2]) * AxisAngle(f.axis, kFireballSpin * f.age), f.age, f.scale);
+    }
+    if (s.source && !s.gridfx.empty()) {
+      // Original (0x4acb00): je Bild verkleinert sich jeder Marker um den Faktor GRID_FX_GROWTH_RATE (0,83), wenn seit der letzten Aenderung mehr als
+      // GRID_FX_GROWTH_INTERVAL (0,01 s) vergangen sind, und verschwindet unter GRID_FX_MIN_SIZE (2). Gezeichnet wird ein um den Winkel
+      // GRID_FX_ROTATION_SPEED x Groesse / GRID_FX_MAX_SIZE gedrehtes Quadrat mit den Eckpunkten im Abstand Groesse (Sprite gridFXSprite, additiv).
+      std::vector<float> mesh;
+      for (size_t gi = s.gridfx.size(); gi-- > 0;) {
+        Impl::GridFx& g = s.gridfx[gi];
+        if (s.clock - g.last > 0.01) {
+          g.last = s.clock;
+          g.size *= 0.83f;
+          if (g.size < 2.0f) { s.gridfx.erase(s.gridfx.begin() + static_cast<long>(gi)); continue; }
+        }
+        const float th = 2.0f * g.size / 50.0f, sn = std::sin(th), cs = std::cos(th), r = g.size;
+        const float c[4][2] = {{sn * r, cs * r}, {cs * r, -sn * r}, {-sn * r, -cs * r}, {-cs * r, sn * r}};
+        const float uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        mesh.clear();
+        for (int k : {0, 1, 2, 0, 2, 3}) {
+          mesh.push_back(c[k][0]); mesh.push_back(0.0f); mesh.push_back(c[k][1]);
+          mesh.push_back(uv[k][0]); mesh.push_back(uv[k][1]);
+        }
+        const float tint[3] = {1.0f, 1.0f, 1.0f};
+        s.effects.DrawMesh(proj, view * Mat4::Translation(g.pos[0], g.pos[1], g.pos[2]), mesh, "GgridFX", tint, 1.0f, *s.source);
+      }
     }
     if (s.source) {
       std::vector<float> mesh;
@@ -3281,6 +3480,46 @@ void Game::OnFrame(double dt) {
         d.rgba[0] = d.rgba[1] = d.rgba[2] = tint;
         dr.push_back(d);
       };
+      // Schildbalken und Besatzungspunkt zu einem Bildschirmrechteck (x0, y0, x1, y1) eines Schiffs oder Symbols
+      auto ship_bars = [&](const Impl::Spawned& sp, float x0, float y0, float x1, float y1) {
+        const float ps = std::max(1.0f, std::min(W / 640.0f, H / 480.0f));  // das Original rechnet in Pixeln eines 640 x 480-Fensters
+        const float bx = std::floor(x0), bw = std::floor(x1) - std::floor(x0) + 1.0f, bh = 4.0f * ps, by = std::floor(y0) - 5.0f * ps;
+        // Balken als Sprite select_shield_bar (weisser Streifen, getoent); die Fuellung zeigt nur den Anteil f der Grafik (Original 0x597a70)
+        auto bar = [&](float x, float y, float w, float h, float frac, float r, float g, float b) {
+          HudDraw d;
+          float uv[4];
+          bool add = false;
+          if (!s.hud_data.Sprite("select_shield_bar", &d.tex, uv, &add)) {
+            d.x = x; d.y = y; d.w = w * frac; d.h = h;
+          } else {
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[0] + (uv[2] - uv[0]) * frac; d.v1 = uv[3];
+            d.x = x; d.y = y; d.w = w * frac; d.h = h;
+          }
+          d.rgba[0] = r; d.rgba[1] = g; d.rgba[2] = b; d.rgba[3] = 1.0f;
+          d.additive = true;
+          dr.push_back(d);
+        };
+        if (sp.hp.shield_max > 0.1f) {
+          const float f = std::max(0.0f, std::min(1.0f, sp.hp.shield / sp.hp.shield_max));
+          bar(bx, by, bw, bh, 1.0f, 0.2f, 0.2f, 0.2f);
+          bar(bx, by, bw, bh, f, 0.5f * (1.0f - f), 0.5f * f, 0.0f);
+        }
+        if (sp.hp.crew_max > 0.0f) {
+          const float f = sp.hp.crew / sp.hp.crew_max;
+          const float dot = 7.0f * ps;
+          const bool red = f <= sp.hp.race.crew_red, yellow = f <= sp.hp.race.crew_yellow;
+          HudDraw d;
+          float uv[4];
+          bool add = false;
+          if (s.hud_data.Sprite("select_crew_dot", &d.tex, uv, &add)) {  // runde Grafik fguib04 (14 x 14)
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = true;
+            d.x = std::floor(x1); d.y = std::floor(y1) - 8.0f * ps; d.w = dot; d.h = dot;
+            d.rgba[0] = red || yellow ? 0.5f : 0.0f; d.rgba[1] = red ? 0.0f : 0.5f; d.rgba[2] = 0.0f; d.rgba[3] = 1.0f;
+            dr.push_back(d);
+          }
+        }
+      };
       for (const SymItem& sy : syms) {  // Symbolansicht: kamerazugewandtes Sprite in Teamfarbe
         float px, py, pw;
         if (!project(sy.p, &px, &py, &pw)) continue;
@@ -3297,41 +3536,72 @@ void Game::OnFrame(double dt) {
           d.rgba[0] = c[0]; d.rgba[1] = c[1]; d.rgba[2] = c[2]; d.rgba[3] = a;
           dr.push_back(d);
         };
-        if (s.sym_mode == 2) for (int i = 1; i <= 5; ++i) put(sy.wire + "w" + std::to_string(i), px, py, sz * 1.4f, sz * 1.4f, 1.0f);
-        else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
+        if (s.sym_mode == 2) {
+          for (int i = 1; i <= 5; ++i) {
+            // Systemzustand wie im Infofeld (Teil i <-> System i, Zuordnung dort ebenfalls angenommen): unbeschaedigt Teamfarbe, beschaedigt gelb, ausgefallen rot
+            float sv = 1.0f;
+            if (sy.ship && sy.ship->hp.sys[i - 1].max_points > 0) sv = sy.ship->hp.sys_frac(i - 1);
+            const float* tc = kMapTeamColors[sy.team >= 0 && sy.team < 9 ? sy.team : 0];
+            // Nur nicht gesunde Teile blinken (Wechsel zwischen Schadensfarbe und Teamfarbe, 1 s Periode); gesunde Teile bleiben in der Teamfarbe
+            const bool bad_phase = sv < 1.0f && std::fmod(s.clock, 1.0) < 0.5;
+            const float col[3] = {bad_phase ? 1.0f : tc[0], bad_phase ? (sv <= 0.0f ? 0.2f : 0.9f) : tc[1], bad_phase ? 0.2f : tc[2]};
+            HudDraw d;
+            float uv[4];
+            bool add = false;
+            if (!s.hud_data.Sprite((sy.wire + "w" + std::to_string(i)).c_str(), &d.tex, uv, &add)) continue;
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = add;
+            d.x = px - 0.7f * sz; d.y = py - 0.7f * sz; d.w = 1.4f * sz; d.h = 1.4f * sz;
+            d.rgba[0] = col[0]; d.rgba[1] = col[1]; d.rgba[2] = col[2]; d.rgba[3] = 1.0f;
+            dr.push_back(d);
+          }
+          if (sy.ship && !sy.ship->derelict && (sy.sel || sy.ship->hp.shield < sy.ship->hp.shield_max || sy.ship->hp.crew_frac() < 1.0f || sy.ship->hp.damaged()))
+            ship_bars(*sy.ship, px - 0.7f * sz, py - 0.7f * sz, px + 0.7f * sz, py + 0.7f * sz);
+        } else {  // Fraktionslogo nach dem ersten ODF-Buchstaben (f/k/r/b), sonst HUD-Rasse
           static const char* kIcon[4] = {"federation_icon", "klingon_icon", "romulan_icon", "borg_icon"};
           const char ch = sy.wire.empty() ? 'f' : sy.wire[0];
           const int ri = ch == 'k' ? 1 : ch == 'r' ? 2 : ch == 'b' ? 3 : ch == 'f' ? 0 : (s.hud_race & 3);
           put(kIcon[ri], px, py, sz * 1.46f, sz, 1.0f);
         }
         if (sy.sel) {  // Auswahlecken (GCselect, 3x3-Rahmen)
-          const float h = 0.5f * sz * 1.5f, q = 22.0f * std::max(1.0f, H / 700.0f);
-          put("selection.00", px - h, py - h, q, q, 1.0f);
-          put("selection.20", px + h, py - h, q, q, 1.0f);
-          put("selection.02", px - h, py + h, q, q, 1.0f);
-          put("selection.22", px + h, py + h, q, q, 1.0f);
+          const float h = 0.85f * sz, q = 22.0f * std::max(1.0f, std::floor(H / 600.0f));  // Zelle sitzt mit ihrer Aussenecke auf der Rahmenecke
+          for (const auto& corner : {std::make_tuple("selection.00", -h, -h), std::make_tuple("selection.20", h, -h), std::make_tuple("selection.02", -h, h), std::make_tuple("selection.22", h, h)}) {
+            HudDraw d;  // Auswahlecken in Weiss, damit die Auswahl auffaellt (nicht in der Teamfarbe)
+            float uv[4];
+            bool add = false;
+            if (!s.hud_data.Sprite(std::get<0>(corner), &d.tex, uv, &add)) continue;
+            d.u0 = uv[0]; d.v0 = uv[1]; d.u1 = uv[2]; d.v1 = uv[3];
+            d.additive = add;
+            const float ox = std::get<1>(corner), oy = std::get<2>(corner);
+            d.x = std::floor(px + ox - (ox > 0 ? q : 0.0f)); d.y = std::floor(py + oy - (oy > 0 ? q : 0.0f)); d.w = q; d.h = q;
+            d.rgba[0] = d.rgba[1] = d.rgba[2] = d.rgba[3] = 1.0f;
+            dr.push_back(d);
+            dr.push_back(d);  // die Bogen sind 1 Pixel duenn und additiv: doppelt gezeichnet, damit sie sichtbar bleiben
+          }
         }
       }
-      for (const Impl::Spawned& sp : s.spawned) {  // Schild-/Huellenbalken ueber beschaedigten oder ausgewaehlten Objekten
+      for (const Impl::Spawned& sp : s.spawned) {  // Balken ueber beschaedigten oder ausgewaehlten Objekten (SelectionDisplay, docs/formats/field-displays.md)
         if (sp.derelict || (!sp.sel && sp.hp.shield >= sp.hp.shield_max && sp.hp.crew_frac() >= 1.0f && !sp.hp.damaged())) continue;
         auto it = s.spawn_models.find(sp.sod);
-        const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
-        const float top[3] = {sp.st.pos[0], sp.st.pos[1] + rw, sp.st.pos[2]};
-        float px, py, pw;
-        if (!project(top, &px, &py, &pw)) continue;
-        const float bw = std::max(30.0f, rw * fy / pw * 1.6f), bh = std::max(3.0f, bw * 0.07f);
-        auto bar = [&](float y, float frac, float r, float g, float b) {
-          HudDraw bg;
-          bg.x = px - 0.5f * bw; bg.y = y; bg.w = bw; bg.h = bh;
-          bg.rgba[0] = bg.rgba[1] = bg.rgba[2] = 0.0f; bg.rgba[3] = 0.6f;
-          dr.push_back(bg);
-          HudDraw f = bg;
-          f.w = bw * std::max(0.0f, std::min(1.0f, frac));
-          f.rgba[0] = r; f.rgba[1] = g; f.rgba[2] = b; f.rgba[3] = 0.9f;
-          dr.push_back(f);
-        };
-        bar(py - bh * 2.5f, sp.hp.shield_frac(), 0.3f, 0.6f, 1.0f);
-        bar(py - bh * 1.2f + bh, sp.hp.crew_frac(), 0.3f, 0.9f, 0.3f);
+        if (it == s.spawn_models.end()) continue;
+        if (sym_small(sp.st.pos, it->second.radius * sp.scale)) continue;  // Symbolansicht zeichnet die Balken selbst
+        // Bildschirmrechteck: die acht Ecken des Huellquaders projiziert (0x49a3f0), Minimum / Maximum
+        Mat4 sm, sr;
+        ShipMatrices(sp.st, sp.scale, &sm, &sr);
+        const float* bb = it->second.bounds;
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        bool ok = true;
+        for (int c = 0; c < 8 && ok; ++c) {
+          const float lc[3] = {(c & 1) ? bb[3] : bb[0], (c & 2) ? bb[4] : bb[1], (c & 4) ? bb[5] : bb[2]};
+          float wc[3], cx, cy, cw;
+          Impl::Xf(sm, lc, wc);
+          if (!project(wc, &cx, &cy, &cw)) { ok = false; break; }
+          x0 = std::min(x0, cx); x1 = std::max(x1, cx); y0 = std::min(y0, cy); y1 = std::max(y1, cy);
+        }
+        if (!ok) continue;
+        // Original (0x49abf0 / 0x49afe0): Balken 4 Pixel hoch bei y = oben - 5, Breite = Rechteckbreite + 1, Grund grau 0,2, Fuellung Rot -> Gruen (0,5 (1 - f), 0,5 f, 0)
+        // mit Teil f = Schild / maxSchild; Besatzungspunkt 7 x 7 am rechten Rand unten (y = unten - 8), gruen / gelb / rot je nach crewYellow / crewRed; Mischung additiv.
+        ship_bars(sp, x0, y0, x1, y1);
       }
       for (size_t i = 0; i < s.spawned.size(); ++i) {
         const Impl::Spawned& sp = s.spawned[i];
@@ -3341,17 +3611,10 @@ void Game::OnFrame(double dt) {
         const float rw = std::max(5.0f, (it != s.spawn_models.end() ? it->second.radius : 20.0f) * sp.scale);
         const float foot[3] = {sp.st.pos[0], 0.0f, sp.st.pos[2]};  // Ring liegt auf der Gitterebene unter dem Objekt
         float px, py, pw;
+        if (sym_small(sp.st.pos, rw)) continue;  // Symbolansicht: Auswahl durch die Ecken am Symbol, kein Ring
         if (project(foot, &px, &py, &pw)) {
           const float r = std::max(18.0f, rw * fy / pw);  // Pixel
           sprite("selectionCircle", px, py, 2.4f * r, 2.4f * r * squash, tint);
-          if (sp.st.has_target) {
-            const float tg[3] = {sp.st.target[0], 0.0f, sp.st.target[2]};
-            float tx, ty, tw;
-            if (project(tg, &tx, &ty, &tw)) {
-              const float rt = std::max(12.0f, rw * fy / tw);
-              sprite("gridFXSprite", tx, ty, 2.0f * rt, 2.0f * rt * squash, tint);
-            }
-          }
         }
       }
       if (!dr.empty()) s.hud_gl.Draw(dr, *s.source, s.width, s.height);

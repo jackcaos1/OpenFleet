@@ -2196,7 +2196,11 @@ struct Game::Impl {
     }
     if (any_gone) {
       const auto gone = [](const Spawned& s) { return s.dying && s.die.left <= 0; };
-      for (const Spawned& s : spawned) if (gone(s)) { UnstampStation(s); OwnerLose(s); }
+      for (const Spawned& s : spawned) if (gone(s)) {
+        UnstampStation(s); OwnerLose(s);
+        const int ai = FindById(s.attacker_id);
+        FLEET_LOGI("DBG destroyed %s team %d at (%.0f,%.0f) by %s team %d", s.odf.c_str(), s.team, s.st.pos[0], s.st.pos[2], ai >= 0 ? spawned[static_cast<size_t>(ai)].odf.c_str() : "?", ai >= 0 ? spawned[static_cast<size_t>(ai)].team : -1);
+      }
       spawned.erase(std::remove_if(spawned.begin(), spawned.end(), gone), spawned.end());
     }
     if (sel_changed) {  // Hauptobjekt war betroffen: naechstes ausgewaehltes Objekt uebernehmen
@@ -3163,7 +3167,13 @@ struct Game::Impl {
       const float dx = o.st.pos[0] - o.site[0], dz = o.st.pos[2] - o.site[2];
       if (std::sqrt(dx * dx + dz * dz) < 150.0f || o.st.has_target) { a.rig_wait[o.id] = 0; continue; }
       a.rig_wait[o.id] += 2.0;
-      if (a.rig_wait[o.id] >= 6.0) { o.has_site = false; a.rig_wait[o.id] = 0; ++a.site_fail; }
+      if (a.rig_wait[o.id] >= 6.0) {
+        std::vector<PathPoint> pp;
+        const bool fp = path_grid.FindPath({o.st.pos[0], o.st.pos[2]}, {o.site[0], o.site[2]}, &pp);
+        FLEET_LOGI("DBG rig %u gives up site %s (%.0f,%.0f) from (%.0f,%.0f) findpath=%d blocked_here=%d blocked_site=%d", o.id, o.site_odf.c_str(), o.site[0], o.site[2], o.st.pos[0], o.st.pos[2], fp ? 1 : 0,
+                   path_grid.Blocked(o.st.pos[0], o.st.pos[2]) ? 1 : 0, path_grid.Blocked(o.site[0], o.site[2]) ? 1 : 0);
+        o.has_site = false; a.rig_wait[o.id] = 0; ++a.site_fail;
+      }
     }
     // Wirtschaft sichern (Kommentar der Bauliste: "two freighters for each" Bergbaustation): fehlende Frachter nachbauen, auch wenn der Plan weiter ist
     {

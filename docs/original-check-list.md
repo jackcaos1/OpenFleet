@@ -18,3 +18,6 @@ Things that could not be settled from the executable or the data files. Add a re
 - [ ] Whether the grid is drawn behind or in front of ships (depth test).
 - [ ] Ring of the shockwave on destruction: size for stations and large ships (client radius = half the bounding box diagonal, minimum 40).
 - [ ] Destroyed ships: tumbling or not (client: none, the ship keeps its previous motion).
+- [ ] Selection display: does the original draw a thin rectangle (four lines, team colour) around a selected ship in addition to the ground ring? (the code draws one, 0x49a7d0)
+- [ ] Position and size of the shield / energy bars and crew dots over a selected ship; group number display.
+- [ ] Target marker after a move order (ring `gridFXSprite`, parameters `GRID_FX_*`): size and duration.

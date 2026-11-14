@@ -173,7 +173,10 @@ int main(int argc, char** argv) {
           sim_t += 0.05;
           if (!human_build.empty() && sim_t >= 1.0) {
             const size_t c = human_build.find(':');
-            std::fprintf(stderr, "human build: %s\n", game.DebugHumanBuild(human_build.substr(0, c), c == std::string::npos ? 0 : std::atoi(human_build.c_str() + c + 1)).c_str());
+            const size_t c2 = c == std::string::npos ? c : human_build.find(':', c + 1);
+            const int reps = c2 == std::string::npos ? 1 : std::max(1, std::atoi(human_build.c_str() + c2 + 1));   // "odf:item:count"
+            for (int rep = 0; rep < reps; ++rep)
+              std::fprintf(stderr, "human build: %s\n", game.DebugHumanBuild(human_build.substr(0, c), c == std::string::npos ? 0 : std::atoi(human_build.c_str() + c + 1)).c_str());
             human_build.clear();
           }
           if (!human_order.empty() && sim_t >= 1.0) {

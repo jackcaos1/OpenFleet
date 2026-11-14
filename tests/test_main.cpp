@@ -32,6 +32,7 @@
 #include "game/PathGrid.h"
 #include "game/Skirmish.h"
 #include "game/Economy.h"
+#include "game/Shroud.h"
 #include "game/Ai.h"
 #include "formats/LabelMap.h"
 #include "io/ZipSource.h"
@@ -1677,6 +1678,28 @@ static void TestNoPathStops() {
 }
 
 
+static void TestShroud() {
+  using namespace fleet;
+  Shroud sh;
+  CHECK(sh.Empty());
+  sh.Init(-1000, -1000, 1000, 1000, 100.0f);
+  CHECK(!sh.Empty());
+  CHECK(!sh.Seen(0, 0));
+  sh.Reveal(0, 0, 250);
+  CHECK(sh.Seen(0, 0));
+  CHECK(sh.Seen(100, 0));
+  CHECK(!sh.Seen(600, 0));
+  float x = 0, z = 0;
+  // Everything within r of the centre is revealed -> no unexplored point; a larger radius finds one outside.
+  CHECK(!sh.FindUnseen(0, 0, 150, 0.3f, &x, &z));
+  CHECK(sh.FindUnseen(0, 0, 800, 0.3f, &x, &z));
+  CHECK(!sh.Seen(x, z));
+  CHECK(std::hypot(x, z) <= 800.0f);
+  sh.Clear();
+  CHECK(!sh.Seen(0, 0));
+  CHECK(sh.Seen(5000, 5000));  // outside the map counts as seen
+}
+
 static void TestEconomy() {
   using namespace fleet;
   // Cost factors (0x46bbf0): only computer players, only when a game type was chosen
@@ -1972,6 +1995,7 @@ int main() {
   TestPathGrid();
   TestSkirmish();
   TestEconomy();
+  TestShroud();
   TestAi();
   TestMenuLayout();
   TestSaveGame();

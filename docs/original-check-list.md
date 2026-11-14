@@ -66,3 +66,11 @@ Things that could not be settled from the executable or the data files. Add a re
 - Compare the control panel for each object class with docs/formats/gui-original.md: ships, starbase, shipyard, construction ship, freighter, mining station, a ship with the self-destruct weapon. Which buttons appear, which are greyed out, and when?
 - Recrew (location 7) on a starbase and rally point (location 11) on a yard: what do they do exactly (not read yet)?
 - Does a stopped or moved freighter really stop mining until "harvest" is pressed?
+
+## Build 107: orders (night/orders-weapons)
+Verified in the code, **not yet compared with the running original**:
+- Guard: does the guard really keep 100 m from the protected ship and only fire at enemies inside weapon range - 25 (or at the attacker of the protected ship)?
+- Scout: do scouting ships fly outward in growing rings, and does the radius restart after the whole map was explored?
+- Search and destroy: random flight across the whole map; do ships only attack what comes into weapon range? Is the button really HUNT?
+- Patrol: **assumption** (back and forth between start and tapped point). What does the original do (several points? loops?).
+- Which ships may use these orders (all movable classes? armed only?).

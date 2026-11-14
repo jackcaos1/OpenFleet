@@ -25,6 +25,7 @@
 #include "game/Hud.h"
 #include "game/HoverShip.h"
 #include "game/PathGrid.h"
+#include "game/Shroud.h"
 #include "game/ShipSim.h"
 #include "render/HudRenderer.h"
 #include "formats/ZfsSource.h"
@@ -383,6 +384,15 @@ struct Game::Impl {
     float fr_timer = 0;
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
+    // Befehle (CraftProcess-Auftragstypen, docs/formats/orders.md): Wache 26, Erkunden 27, Patrouille 29, Suchen und Zerstoeren (HUNT) 25
+    enum Ord { kOrdNone = 0, kOrdGuard, kOrdPatrol, kOrdScout, kOrdHunt };
+    int order = kOrdNone;
+    unsigned ord_target = 0;                // Wache: Schutzobjekt (+0x7c)
+    float ord_p0[3] = {0, 0, 0}, ord_p1[3] = {0, 0, 0};  // Patrouille: Start und Ziel; Erkunden: Startposition (+0x90) / aktuelles Ziel (+0x9c)
+    int ord_leg = 0;
+    float ord_r = 500;                      // Erkunden: Suchradius (+0x8c)
+    float ord_stuck_t = 0, ord_last[3] = {0, 0, 0};  // Festhaengen: Ort (+0x140) und Zeit (+0x13c)
+    float ord_think = 0;
   };
   struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; unsigned user = 0; };
   int moon_sel = -1;  // angetippter Dilithiummond (Infofeld), -1 keiner  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
@@ -409,6 +419,8 @@ struct Game::Impl {
   CmdPage cmd_page = CmdPage::Main;
   bool move_armed = false;
   bool attack_armed = false;
+  bool guard_armed = false, patrol_armed = false;
+  std::map<int, Shroud> shroud;  // je Team: bereits gesehene Kartenteile (Erkunden / Suchen und Zerstoeren)
   bool transport_armed = false;
   std::vector<CinematicRequest> cinematic_requests;  // Anforderungen an die (noch fehlende) Kinosicht
   int difficulty_mode = 2;  // Original [0x68dc64]: 1 leicht, 2 normal, 3 schwer; Auswahl im Client folgt (Vorgabe normal, Faktor 1)
@@ -463,6 +475,7 @@ struct Game::Impl {
   // Sperrzonen fuer Bauplaetze (Nutzerwunsch): Monde, Planeten, Nebel, Wurmloecher, Schwarze Loecher, Asteroidenfelder; Stationen siehe SiteCheck (footprintBuffer)
   struct Blocker { float pos[3]; float r; };
   std::vector<Blocker> build_blockers;
+  float map_lo[2] = {-1500, -1500}, map_hi[2] = {1500, 1500};  // Kartengrenzen im Originalsystem (z = -z_GL)
   PathGrid path_grid;                  // gesperrte Felder fuer die Wegsuche (Originalsystem x, z = -z_GL)
   int scene_hidden_count = 0;
   std::map<std::string, SpawnModel> spawn_models;
@@ -698,6 +711,8 @@ struct Game::Impl {
       }
     }
     path_grid.Init(lo[0], lo[1], hi[0], hi[1], 50.0f);
+    for (int k = 0; k < 2; ++k) { map_lo[k] = lo[k]; map_hi[k] = hi[k]; }
+    shroud.clear();
     for (const MapObstacle& mo : map_obstacles)
       if (mo.inst < 0) path_grid.StampField(mo.pos[0], -mo.pos[2]);
     // Fussabdruck von Stationen (0x46d5c0: CraftClass mit is_starbase): Bounding-Box des Modells (ungedreht, skaliert) + Position, Kosten 198, Radius 0
@@ -1750,7 +1765,7 @@ struct Game::Impl {
   bool CmdSel(const Spawned& x) const { return x.sel && x.team == human_team; }
 
   void StopSelected() {
-    attack_armed = move_armed = transport_armed = false;
+    attack_armed = move_armed = transport_armed = guard_armed = patrol_armed = false;
     if (SelCount() > 0) {
       for (Spawned& s : spawned)
         if (CmdSel(s)) {
@@ -1759,6 +1774,7 @@ struct Game::Impl {
           s.target_id = 0;
           s.auto_move = 0;
           s.beam_id = 0;
+          ClearOrder(s);
         }
     } else {
       for (Spawned& s : spawned) if (s.team == human_team) StopShip(&s.st);
@@ -1921,6 +1937,155 @@ struct Game::Impl {
     return best;
   }
 
+
+  // ---- Befehle: Wache, Patrouille, Erkunden, Suchen und Zerstoeren (docs/formats/orders.md) ----
+  // Originalhandler je Auftragstyp (CraftProcess, Tabelle 0x42813c): GUARD 0x428690, SCOUT 0x42b870, HUNT 0x42bb20. Zielwahl FindTarget 0x42ff80:
+  // behaelt das Ziel, solange es innerhalb Waffenreichweite - 25 liegt, sonst naechster Feind in dieser Reichweite (0x4300a0). Annaeherung 0x42bd50:
+  // weiter weg als Reichweite - 50: zum Ziel fliegen, sonst halten und schiessen. Patrouille ist NICHT gelesen (ANNAHME: hin und her zwischen Start und Ziel).
+  float WeaponReach(const Spawned& s) const {
+    float r = 0;
+    for (const WeaponRt& w : s.weapons) r = std::max(r, w.range);
+    return r;
+  }
+  Shroud& TeamShroud(int team) {
+    Shroud& sh = shroud[team];
+    if (sh.Empty()) sh.Init(map_lo[0], -map_hi[1], map_hi[0], -map_lo[1], 100.0f);
+    return sh;
+  }
+  int AcquireOrderTarget(size_t i, float reach) {
+    Spawned& s = spawned[i];
+    const int cur = FindById(s.target_id);
+    if (cur >= 0 && Hostile(s, spawned[static_cast<size_t>(cur)]) && Dist3(s.st.pos, spawned[static_cast<size_t>(cur)].st.pos) - RadiusOf(spawned[static_cast<size_t>(cur)]) <= reach - 25.0f) return cur;
+    const int n = NearestHostile(i, reach - 25.0f);
+    s.target_id = n >= 0 ? spawned[static_cast<size_t>(n)].id : 0;
+    return n;
+  }
+  void EngageTarget(Spawned& s, const Spawned& t, float reach) {
+    if (!CanFly(s)) return;
+    if (Dist3(s.st.pos, t.st.pos) > reach - 50.0f) {
+      SetShipTarget(&s.st, t.st.pos);
+    } else if (s.st.has_target) {
+      StopShip(&s.st);
+    }
+  }
+  void ClearOrder(Spawned& s) {
+    s.order = Spawned::kOrdNone;
+    s.ord_target = 0;
+  }
+  void StepOrder(size_t i, float dt) {
+    Spawned& s = spawned[i];
+    s.ord_think -= dt;
+    if (s.ord_think > 0) return;
+    s.ord_think = 0.25f;
+    const bool armed = !s.weapons.empty() && s.hp.sys_ok(kWeapons);
+    const float reach = armed ? WeaponReach(s) : 0.0f;
+    const float scan = s.hp.sys_ok(kSensors) ? s.scan : s.scan_damaged;
+    if (s.order == Spawned::kOrdGuard) {
+      const int g = FindById(s.ord_target);
+      if (g < 0 || !spawned[static_cast<size_t>(g)].hp.alive()) {  // Schutzobjekt weg: Stopp (0x4286b0)
+        ClearOrder(s);
+        s.target_id = 0;
+        StopShip(&s.st);
+        return;
+      }
+      const Spawned& gd = spawned[static_cast<size_t>(g)];
+      if (gd.attacked_t > 9.0f && armed) {  // Schutzobjekt in der letzten Sekunde getroffen (0x46e640): dessen Angreifer bekaempfen
+        const int a = FindById(gd.attacker_id);
+        if (a >= 0 && Hostile(s, spawned[static_cast<size_t>(a)])) s.target_id = spawned[static_cast<size_t>(a)].id;
+        else AcquireOrderTarget(i, reach);
+      } else if (armed) {
+        AcquireOrderTarget(i, reach);
+      } else {
+        s.target_id = 0;
+      }
+      float dv[3];
+      for (int k = 0; k < 3; ++k) dv[k] = s.st.pos[k] - gd.st.pos[k];
+      const float d2 = dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2];
+      if (d2 > 10000.0f && CanFly(s)) {  // weiter als 100 m: auf 100 m heran, auf der Linie Schutzobjekt - eigenes Schiff
+        const float d = std::sqrt(d2);
+        const float p[3] = {gd.st.pos[0] + dv[0] / d * 100.0f, gd.st.pos[1] + dv[1] / d * 100.0f, gd.st.pos[2] + dv[2] / d * 100.0f};
+        SetShipTarget(&s.st, p);
+      }
+      return;
+    }
+    const int t = armed ? AcquireOrderTarget(i, reach) : -1;
+    if (t >= 0) {
+      EngageTarget(s, spawned[static_cast<size_t>(t)], reach);
+      return;
+    }
+    s.target_id = 0;
+    if (!CanFly(s)) return;
+    // Festhaengen: bewegt sich das Schiff 6 s nicht um mehr als 1 m, wird ein neues Ziel gewaehlt (+0x13c / +0x140)
+    if (Dist3(s.st.pos, s.ord_last) > 1.0f) {
+      for (int k = 0; k < 3; ++k) s.ord_last[k] = s.st.pos[k];
+      s.ord_stuck_t = 0;
+    } else {
+      s.ord_stuck_t += 0.25f;
+    }
+    const bool stuck = s.ord_stuck_t > 6.0f;
+    const float tight = s.hodf_ok ? s.hodf.tooCloseToTurn : 50.0f;
+    if (s.order == Spawned::kOrdPatrol) {
+      const float* goal = s.ord_leg == 0 ? s.ord_p1 : s.ord_p0;
+      if (Dist3(s.st.pos, goal) < std::max(tight, 100.0f)) s.ord_leg ^= 1;
+      SetShipTarget(&s.st, s.ord_leg == 0 ? s.ord_p1 : s.ord_p0);
+      return;
+    }
+    if (s.order == Spawned::kOrdScout) {
+      Shroud& sh = TeamShroud(s.team);
+      const float dx = s.st.pos[0] - s.ord_p1[0], dz = s.st.pos[2] - s.ord_p1[2];
+      if (dx * dx + dz * dz < 10000.0f || stuck || !s.st.has_target) {
+        if (!stuck) sh.Reveal(s.st.pos[0], s.st.pos[2], scan);
+        float nx = 0, nz = 0;
+        s.ord_stuck_t = 0;
+        if (sh.FindUnseen(s.ord_p0[0], s.ord_p0[2], s.ord_r, rng.F01(), &nx, &nz)) {
+          s.ord_p1[0] = nx; s.ord_p1[1] = 0; s.ord_p1[2] = nz;
+        } else {
+          const float lim = std::hypot(map_hi[0] - map_lo[0], map_hi[1] - map_lo[1]);
+          if (lim > s.ord_r) {
+            s.ord_r += 500.0f;  // 0x5ca7a0
+          } else {
+            s.ord_r = 100.0f;   // Suchradius erschoepft: Karte vergessen und von vorn (0x421900)
+            sh.Clear();
+          }
+        }
+      }
+      SetShipTarget(&s.st, s.ord_p1);
+      return;
+    }
+    if (s.order == Spawned::kOrdHunt) {
+      TeamShroud(s.team).Reveal(s.st.pos[0], s.st.pos[2], scan);  // 0x421af0
+      const float dx = s.st.pos[0] - s.ord_p1[0], dz = s.st.pos[2] - s.ord_p1[2];
+      if (dx * dx + dz * dz < tight * tight || stuck || !s.st.has_target) {
+        s.ord_stuck_t = 0;
+        for (int n = 0; n < 100; ++n) {  // bis zu 100 Versuche: Zufallspunkt der Karte (Rand 100) auf einer begehbaren Zelle
+          const float x = map_lo[0] + 100.0f + rng.F01() * std::max(1.0f, map_hi[0] - map_lo[0] - 200.1f);
+          const float zo = map_lo[1] + 100.0f + rng.F01() * std::max(1.0f, map_hi[1] - map_lo[1] - 200.1f);
+          if (!path_grid.Empty() && path_grid.Blocked(x, zo)) continue;
+          s.ord_p1[0] = x; s.ord_p1[1] = 0; s.ord_p1[2] = -zo;
+          break;
+        }
+      }
+      SetShipTarget(&s.st, s.ord_p1);
+    }
+  }
+
+  void StartOrder(Spawned& s, int ord, const float* p1, unsigned target) {
+    s.order = ord;
+    s.ord_target = target;
+    s.target_id = 0;
+    s.auto_move = 0;
+    s.ord_think = 0;
+    s.ord_stuck_t = 0;
+    for (int k = 0; k < 3; ++k) {
+      s.ord_p0[k] = s.st.pos[k];
+      s.ord_last[k] = s.st.pos[k];
+      s.ord_p1[k] = p1 ? p1[k] : s.st.pos[k];
+    }
+    s.ord_leg = 0;
+    s.ord_r = 500.0f;  // NewOrder: Suchradius = 0x5ca7a0 (500), Startposition = aktuelle Position
+    if (s.fr_state != 0 || s.freighter) { s.fr_manual = true; s.fr_state = 0; }
+  }
+
   // Gefecht (Originalregeln siehe Combat.h): Schild laedt auf, Besatzung/Systeme, Derelict-Schiffe, Alarmstufen
   // (Rot: feuert auf alles Sichtbare, verfolgt begrenzt; Gelb: nur wenn selbst/Nachbarn angegriffen; Gruen: flieht, feuert nicht; Abwarten: kein Ziel),
   // Waffen mit Besatzungsstatus-Verzoegerung, Strahlen treffen sofort, Torpedos fliegen. Annahmen: Verfolgungsradius 1,5 x Sensorreichweite,
@@ -1960,7 +2125,9 @@ struct Game::Impl {
         if (a >= 0 && Hostile(s, spawned[static_cast<size_t>(a)])) fire_at = a;
       }
       // Bewegung: Angriffsbefehl > Verfolgung (Rot) > Flucht (Gruen) > Rueckkehr
-      if (CanFly(s)) {
+      if (s.order != Spawned::kOrdNone && CanFly(s)) {
+        StepOrder(i, dt);
+      } else if (CanFly(s)) {
         s.retarget -= dt;
         if (s.retarget <= 0) {
           s.retarget = 0.5f;
@@ -2426,8 +2593,8 @@ struct Game::Impl {
   void WorldTap(float x, float y) {
     float o[3], d[3];
     ScreenRay(x, y, o, d);
-    const int best = move_armed ? -1 : PickAny(o, d);
-    if (best < 0 && !move_armed && !attack_armed && !transport_armed && build_armed.empty()) {  // Dilithiummond antippen: Name und Vorrat
+    const int best = (move_armed || patrol_armed) ? -1 : PickAny(o, d);
+    if (best < 0 && !move_armed && !attack_armed && !transport_armed && !guard_armed && !patrol_armed && build_armed.empty()) {  // Dilithiummond antippen: Name und Vorrat
       int mi = -1;
       float mt = 1e30f;
       for (size_t k = 0; k < moons.size(); ++k) {
@@ -2446,6 +2613,38 @@ struct Game::Impl {
         return;
       }
     }
+    if (guard_armed) {
+      guard_armed = false;
+      if (best >= 0) {
+        const Spawned& t = spawned[static_cast<size_t>(best)];
+        int n = 0;
+        for (Spawned& a : spawned)
+          if (CmdSel(a) && a.movable && a.id != t.id && !a.derelict && !Hostile(a, t)) { StartOrder(a, Spawned::kOrdGuard, nullptr, t.id); ++n; }
+        Message(n > 0 ? "Bewacht " + t.label : "Kein gueltiges Ziel.");
+      } else {
+        Message("Kein Ziel getroffen.");
+      }
+      return;
+    }
+    if (patrol_armed) {
+      patrol_armed = false;
+      if (std::fabs(d[1]) > 1e-4f) {
+        const float t = (kTapPlaneY - o[1]) / d[1];
+        if (t > 0) {
+          const float tg[3] = {o[0] + d[0] * t, kTapPlaneY, o[2] + d[2] * t};
+          int n = 0;
+          for (Spawned& a : spawned)
+            if (CmdSel(a) && a.movable && !a.derelict) { StartOrder(a, Spawned::kOrdPatrol, tg, 0); ++n; }
+          Message(n > 0 ? "Patrouille." : "Kein Schiff kann das.");
+          GridFx g;
+          g.pos[0] = tg[0]; g.pos[1] = kTapPlaneY; g.pos[2] = tg[2];
+          g.size = 50.0f;
+          g.last = clock;
+          gridfx.push_back(g);
+        }
+      }
+      return;
+    }
     if (attack_armed) {
       attack_armed = false;
       if (best >= 0) {
@@ -2454,6 +2653,7 @@ struct Game::Impl {
         for (Spawned& a : spawned)
           if (CmdSel(a) && !a.weapons.empty() && Hostile(a, t)) {
             a.target_id = t.id;
+            ClearOrder(a);
             ++n;
           }
         Message(n > 0 ? "Angriff auf " + t.label : "Kein gueltiges Ziel.");
@@ -2544,6 +2744,7 @@ struct Game::Impl {
             const float tg[3] = {o[0] + d[0] * t + rx * off, kTapPlaneY, o[2] + d[2] * t + rz * off};
             if (!CanFly(s)) continue;
             s.auto_move = 0;
+            ClearOrder(s);
             if (s.freighter && s.dock_phase == 0) { s.fr_manual = true; s.fr_state = 0; }
             SetShipTarget(&s.st, tg);
           }
@@ -4009,10 +4210,10 @@ struct Game::Impl {
       const bool station_free = !sp.bq.active && !sp.has_site;
       st->control[9] = cmd(UiAction::Delete, "b_decom", "Ausmustern", live && (producer ? station_free : (repair_station || !movable)));
       if (movable) {
-        st->control[6] = cmd(UiAction::Guard, "b_guard", "Wache", false);          // Wirkung noch nicht umgesetzt (Anzeige wie im Original: aktiv)
-        st->control[3] = cmd(UiAction::Patrol, "b_patrol", "Patrouille", false);
-        st->control[4] = cmd(UiAction::Scout, "b_scout", "Erkunden", false);
-        st->control[5] = cmd(UiAction::SearchDestroy, "b_sandd", "Suchen", false);
+        st->control[6] = cmd(UiAction::Guard, "b_guard", "Wache", live, guard_armed || sp.order == Spawned::kOrdGuard);
+        st->control[3] = cmd(UiAction::Patrol, "b_patrol", "Patrouille", live, patrol_armed || sp.order == Spawned::kOrdPatrol);
+        st->control[4] = cmd(UiAction::Scout, "b_scout", "Erkunden", live, sp.order == Spawned::kOrdScout);
+        st->control[5] = cmd(UiAction::SearchDestroy, "b_sandd", "Suchen", live, sp.order == Spawned::kOrdHunt);
       }
       if (movable || armed) {  // Alarmstufen (cmd 0x10 .. 0x12): aktiv nur mit Waffen
         st->control[0] = cmd(UiAction::AlertGreen, "b_galert", "Gruen", live && armed, sp.alert == 0);
@@ -4189,18 +4390,36 @@ struct Game::Impl {
       case UiAction::MapInfo: ShowSelectedInfo(); break;
       case UiAction::ModelView: OpenMenu(MenuKind::Maps); break;
       case UiAction::Menu: OpenMenu(MenuKind::Options); break;
-      case UiAction::Move: attack_armed = transport_armed = false; move_armed = !move_armed; if (move_armed) Message("Ziel auf der Karte antippen."); break;
+      case UiAction::Move: attack_armed = transport_armed = guard_armed = patrol_armed = false; move_armed = !move_armed; if (move_armed) Message("Ziel auf der Karte antippen."); break;
       case UiAction::Attack:
         attack_armed = !attack_armed;
-        move_armed = transport_armed = false;
+        move_armed = transport_armed = guard_armed = patrol_armed = false;
         if (attack_armed) Message("Ziel antippen.");
         break;
-      case UiAction::Repair: case UiAction::Guard: case UiAction::Patrol: case UiAction::Scout: case UiAction::SearchDestroy:
+      case UiAction::Guard:
+        guard_armed = !guard_armed;
+        attack_armed = move_armed = transport_armed = patrol_armed = false;
+        if (guard_armed) Message("Zu bewachendes Schiff antippen.");
+        break;
+      case UiAction::Patrol:
+        patrol_armed = !patrol_armed;
+        attack_armed = move_armed = transport_armed = guard_armed = false;
+        if (patrol_armed) Message("Patrouillenziel auf der Karte antippen.");
+        break;
+      case UiAction::Scout: case UiAction::SearchDestroy: {
+        const bool scout = a == UiAction::Scout;
+        int n = 0;
+        for (Spawned& x : spawned)
+          if (CmdSel(x) && x.movable && !x.derelict) { StartOrder(x, scout ? Spawned::kOrdScout : Spawned::kOrdHunt, nullptr, 0); ++n; }
+        Message(n > 0 ? (scout ? "Erkunden." : "Suchen und Zerstoeren.") : "Kein Schiff kann das.");
+        break;
+      }
+      case UiAction::Repair:
         Message("Noch nicht umgesetzt."); break;
       case UiAction::Orders: cmd_page = CmdPage::Orders; break;
       case UiAction::Transport:
         transport_armed = !transport_armed;
-        attack_armed = move_armed = false;
+        attack_armed = move_armed = guard_armed = patrol_armed = false;
         if (transport_armed) Message("Ziel zum Beamen antippen (Reichweite 300).");
         break;
       case UiAction::StandDown:
@@ -4209,6 +4428,7 @@ struct Game::Impl {
             x.alert = 3;
             x.target_id = 0;
             x.auto_move = 0;
+            ClearOrder(x);
           }
         Message("Abwarten: schiesst nicht von selbst.");
         break;
@@ -5201,6 +5421,23 @@ std::string Game::DebugHumanBuild(const std::string& odf, int item) {
   return out;
 }
 
+std::string Game::DebugOrder(const std::string& kind) {
+  Impl& s = *impl_;
+  int n = 0;
+  unsigned first_station = 0;
+  for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { first_station = o.id; break; }
+  for (Impl::Spawned& o : s.spawned) {
+    if (o.team != s.human_team || !o.movable || o.freighter) continue;
+    if (kind == "scout") s.StartOrder(o, Impl::Spawned::kOrdScout, nullptr, 0);
+    else if (kind == "hunt") s.StartOrder(o, Impl::Spawned::kOrdHunt, nullptr, 0);
+    else if (kind == "patrol") { const float p[3] = {o.st.pos[0] + 1500.0f, 0, o.st.pos[2]}; s.StartOrder(o, Impl::Spawned::kOrdPatrol, p, 0); }
+    else if (kind == "guard") s.StartOrder(o, Impl::Spawned::kOrdGuard, nullptr, first_station);
+    else return "unknown order";
+    ++n;
+  }
+  return kind + " given to " + std::to_string(n) + " ships";
+}
+
 std::string Game::DebugReport() const {
   const Impl& s = *impl_;
   std::string out;
@@ -5215,6 +5452,11 @@ std::string Game::DebugReport() const {
       else ++ships;
     }
     if (ships + stations + freighters + armed == 0) continue;
+    for (const Impl::Spawned& o : s.spawned)
+      if (o.team == t && o.order != Impl::Spawned::kOrdNone && !o.dying) {
+        std::snprintf(buf, sizeof buf, "  ship %u order %d pos (%.0f,%.0f) goal (%.0f,%.0f) radius %.0f target %u\n", o.id, o.order, o.st.pos[0], o.st.pos[2], o.ord_p1[0], o.ord_p1[2], o.ord_r, o.target_id);
+        out += buf;
+      }
     for (const Impl::Spawned& o : s.spawned)
       if (o.team == t && o.freighter && !o.dying) {
         std::snprintf(buf, sizeof buf, "  freighter %u state %d phase %d cargo %.0f pos (%.0f,%.1f,%.0f) target %d speed %.1f\n", o.id, o.fr_state, o.dock_phase, o.cargo, o.st.pos[0], o.st.pos[1], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.speed);

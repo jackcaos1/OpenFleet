@@ -89,3 +89,8 @@ Verified in the code (docs/formats/orders.md), not yet compared with the running
 - Does the rally point also apply to the construction ship (it is built at a yard)?
 - Repair: what does the button do in the original, which objects, which rate? (not implemented)
 - Repair order (build 108): which objects count as a repair bay (only shipyards? starbases too?), what exactly happens in the bay (hull? crew? how fast?), does the ship leave to the rally point afterwards, does the queue order ships by arrival?
+
+## Build 110: assumptions re-checked against the code
+Now verified (see orders.md / specials.md): special energy start (full), scout map (400 m cells, nearest unexplored cell, stuck rules, no random), hunt stuck rules, GUI command -> order mapping (repair 19, scout 27, search and destroy 25), patrol (cyclic list, keeps flying), docked repair (20 crew/s, systems x15, finish rule, exit via build hardpoint), rally default (2 x radius for shipyards).
+Please check in the original: ships repair at a starbase as well as at a shipyard? Does a repairing ship fly to the centre of the yard (not to the `repair` node)? Patrol: does the ship shoot while it keeps flying? Scouting: does the ship go to the nearest unexplored 400 m cell, always in the same order on the same map?
+Still assumed: how a cloaked ship is hidden (rule not found), see-through look, bee flight paths, the weapon scan of the repair order, special classes not implemented.

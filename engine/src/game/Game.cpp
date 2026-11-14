@@ -380,6 +380,7 @@ struct Game::Impl {
     int fr_state = 0;                       // 0 Leerlauf, 1 zum Mond, 2 abbauen, 3 zur Station, 4 entladen
     int fr_moon = -1;                       // Ziel-Mond (Index in moons)
     bool fr_manual = false;                 // Frachter wurde angehalten / bewegt: kein Abbau, bis "Abbauen" gedrueckt wird (cmd 0x14)
+    float sd_radius = 0;                    // self destruct fired: radius of the explosion (weapon radius, craft +0x61c, 0x4663d0)
     bool has_selfdestruct = false;          // ODF-Waffe gselfdes (Befehlsseite zeigt dann "Selbstzerstoerung", 0x4633d1)
     // Ausfahrt aus Werft / Dock (OutputQueueManager, Armada.exe 0x557400): das Schiff entsteht an der Hardpoint-Matrix und wird entlang seiner Front geschoben
     bool exiting = false;
@@ -1970,11 +1971,26 @@ struct Game::Impl {
     float cloak = 0;
     for (SpecialRt& r : s.sprt) {
       const SpecialResult res = SpecialUpdate(&r, &s.energy, dt, s.hp.shield, s.hp.shield_max);
+      if (r.def.kind == SpecialKind::Regeneration && r.active) RepairAllSystems(&s.hp);  // 0x508ad0 calls 0x467e90 each frame
       if (res.shield_add > 0) s.hp.shield = std::min(s.hp.shield_max, s.hp.shield + res.shield_add);
       if (r.def.kind == SpecialKind::Cloak) cloak = std::max(cloak, CloakAmount(r));
       if (r.def.kind == SpecialKind::SelfDestruct) {
         s.hp.self_destruct = r.active;
-        if (r.fired) { r.fired = false; s.hp.exploded = true; }
+        if (r.fired) {
+          r.fired = false;
+          s.hp.exploded = true;
+          // 0x4663d0: with +0x61c > 0 the explosion is the craft class' `selfDestruct` fireball (default xselfbal, 0x200280) scaled to the weapon radius
+          s.sd_radius = r.def.radius;
+          std::string e2;
+          if (s.sd_radius > 0 && odf_lib)
+            if (const OdfObject* fo = odf_lib->Get("xselfbal.odf", &e2)) {
+              std::string sv;
+              if (fo->GetString("explSound", &sv)) s.expl_sound = sv;
+              fo->GetFloat("length", &s.expl_len);
+              if (fo->GetString("dbName", &sv) && !sv.empty()) s.expl_model = ToLowerAscii(sv);
+              s.has_shock = LoadShockwaveDef(*odf_lib, "xselfbal", &s.shock);
+            }
+        }
       }
     }
     s.cloak = cloak;
@@ -2457,7 +2473,7 @@ struct Game::Impl {
         f.scale = 1.0f;
         f.life = std::max(1.5f, s.expl_len);
         // Original (0x51b330): nach shockwaveDelay, nur wenn der Objektmassstab (Schiffsradius) ueber shockwaveMinimum liegt
-        f.radius = RadiusOf(s);
+        f.radius = s.sd_radius > 0 ? s.sd_radius : RadiusOf(s);
         {
           float v[3], l2;
           do {
@@ -2467,7 +2483,7 @@ struct Game::Impl {
           const float inv = 1.0f / std::sqrt(l2);
           for (int c = 0; c < 3; ++c) f.axis[c] = v[c] * inv;
         }
-        f.shock_pending = s.has_shock && RadiusOf(s) > s.shock.minimum;
+        f.shock_pending = s.has_shock && f.radius > s.shock.minimum;
         if (!f.shock_pending) {  // Original 0x51b39a: ohne Schockwelle (oder zu klein) fordert der Feuerball selbst die Kamera an
           CinematicRequest cr;
           cr.duration = 1.0f;

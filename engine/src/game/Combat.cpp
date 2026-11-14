@@ -180,6 +180,15 @@ int HitSystemForRoll(const Health& h, int roll) {
   return kHitCritical;
 }
 
+void RepairAllSystems(Health* h) {
+  for (SystemBlock& b : h->sys) {
+    if (b.script_disabled) continue;
+    b.disable_timer = 0;
+    b.points = b.max_points;
+    b.countdown = 0;
+  }
+}
+
 void SetCrew(Health* h, float crew) {
   h->crew = crew;
   if (h->crew < 1.0f && h->crew_max > 0) {

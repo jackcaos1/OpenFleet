@@ -135,6 +135,9 @@ void StepHealth(Health* h, float dt);
 // Besatzung setzen und die Folgen ziehen (0x466ca0): unter 1,0 mit Maximalbesatzung > 0 wird das Schiff Derelict (alle Systeme aus, Schild 0)
 // oder explodiert bei laufendem Selbstzerstoerungs-Countdown; ab 1,0 gilt es wieder als bemannt und die Systeme werden wieder eingeschaltet.
 void SetCrew(Health* h, float crew);
+// 0x467e90 (called every frame by the regeneration weapon): every system that is not script-disabled gets all its points back at once, its timers cleared;
+// the health step switches a repaired system on again.
+void RepairAllSystems(Health* h);
 
 float RollDamage(Rng* r, float base, float variance);
 bool RollHit(Rng* r, float chance);

@@ -109,3 +109,7 @@ Still assumed: how a cloaked ship is hidden (rule not found), see-through look, 
 - Mining: does the freighter fly straight to the moon, then circle it slowly (about 10 m/s) at a small radius and fire one beam every 1.5 s at the moon's centre? Does the beam look like two counter-rotating helices?
 - Info panel: cargo bar of a freighter in the energy bar's place? Ore chunks on the freighter model appear in ten steps (10 %, 20 %, ...)?
 - Mining station: ore ring transparent and turning while a freighter is docked? Anything else animated at the station?
+
+## Open items (14.11.2026, reported by the project owner)
+- **Mining is still not like the original** (user observation after build 113; details unknown): compare approach, circling, beam, cargo and unloading with the running original and fix the differences.
+- **Zoom bug:** after some time (repeated zooming) it is no longer possible to zoom in properly. Not analysed yet (suspects: the zoom limit after pivot/pan changes, `map_dist` / `zoom` drifting, minimum distance clamp).

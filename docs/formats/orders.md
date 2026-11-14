@@ -9,7 +9,7 @@ The names of the 40 order types are stored in the exe as a pointer table (file o
 25 HUNT, 26 GUARD, 27 SCOUT, 28 BUILD, 29 PATROL, 30 SEND, 31 GET_IN, 32 LAY_MINES, 33 RED_ALERT, 34 YELLOW_ALERT, 35 GREEN_ALERT, 36 STAND DOWN,
 37 CANCEL BUILD QUEUE ITEM, 38 WORMHOLE, 39 GO RALLY POINT.
 
-`CraftProcess::NewOrder` (0x426ad0) switches on the type (jump table 0x427f3c, index = type - 2). The per-frame dispatcher (0x427ff0) maps the type with the byte table
+`CraftProcess::NewOrder` (0x426ad0) switches on the type (jump table 0x427f3c, index = type - 1). The per-frame dispatcher (0x427ff0) maps the type with the byte table
 0x42813c and the jump table 0x4280f4 to a virtual slot of the process (vtable 0x5ca7e0):
 
 | type | slot (handler) |
@@ -58,20 +58,22 @@ Orders that call it every frame: GUARD, SCOUT, HUNT. **Consequence:** these orde
   when it is reached (closer than `tooCloseToTurn`) or the craft is stuck (6 s) pick the next one.
 - Mapping of the button: the GUI command "search and destroy" is assumed to issue HUNT (the AI script function `SearchAndDestroy` issues HUNT, 0x436b38).
 
-## Patrol (unknown)
-The PATROL order type shares the GO handler (slot 0x3c); the way the patrol path is stored was **not read**. The client implements an **assumption**: the craft flies
-between its start position and the tapped point, engaging enemies inside weapon range - 25 on the way.
+## Patrol (read, build 109)
+NewOrder jump table index is `type - 1` (the table has 39 entries; type 3 GO = 0x426f5c, which sets order 3). PATROL (29) shares the GO handler 0x428170 and the waypoint follower 0x42ded0.
+The order carries a waypoint list (count, points, mode); mode 2 marks a patrol. The follower advances to the next point when the craft is within the class radius `+0x214` of the current one;
+at the last point of a mode 2 list the index is reset to 0, i.e. **the craft cycles through its points forever**; other lists end with STOP on arrival (0x428411). While moving, the handler
+calls the engage routine (0x429b00) for enemies within the class range `+0x3f4`. The client uses the two points start and tapped point (a cycle of two), which is the same behaviour for one tapped point.
+Open: whether the original GUI lets the player add more points (shift-click), not checked.
 
 ## Recrew and rally point (verified, build 108)
 Both belong to the yard class (shipyard and starbase, ODF keys read by 0x4561c0).
-- **Recrew** (NewOrder handler 0x426c1d): toggles the yard flag `+0x7ac`. Per frame (0x45b220) while the flag is on: when the team's crew pool is at least 1, `amount = min(dt x recrewRate, pool)`,
+- **Recrew** (type 15, NewOrder handler 0x426c1d): toggles the yard flag `+0x7ac`. Per frame (0x45b220) while the flag is on: when the team's crew pool is at least 1, `amount = min(dt x recrewRate, pool)`,
   the station adds it to its own crew (0x467570 returns the part above its maximum), the pool loses only the accepted part and the flag is cleared as soon as something overflowed.
   `recrewRate` is an ODF key of the yard class, default 10 crew per second; no shipped ODF sets it. The button (location 7, 0x45c841) is enabled when the pool is above 0 and the station crew is below its maximum, shown pressed while the flag is on.
-- **Set rally point** (handler 0x426ebe): copies the order's last point into the yard's `+0x7d8` (three floats). Default made when the yard is created (0x45e540): position + front axis x 3 x radius (constant 0x5cb170 = 3.0).
+- **Set rally point** (type 16, handler 0x426ebe): copies the order's last point into the yard's `+0x7d8` (three floats). Default made when the yard is created (0x45e540): position + front axis x 3 x radius (constant 0x5cb170 = 3.0).
   (A second routine, 0x45e9f0, computes 2 x radius instead; it is called from a different virtual slot and was not traced, the client uses 3 x radius.)
 - A craft leaving a yard always gets order 39 with the point `+0x7d8` (0x557400, phase 2); order 2 only when the yard no longer exists.
-- Note: with the order name table as printed above, the jump entries for 15 and 16 do the recrew toggle and the rally copy, i.e. the table of names seems shifted by one against the NewOrder jump table here; the handlers are
-  identified by what they do, not by the name.
+- The jump table index is `type - 1` (see Patrol), so the name table is right: 15 RECREW toggles `+0x7ac`, 16 SET_RALLY writes `+0x7d8`.
 - Client: `Spawned::recrew`, `StepProduction`; `Spawned::rally_set/rally`, `RallyOf`, `StepExits`, tap handling `rally_armed`. Headless tests: `--human-order recrew|rally`.
 
 ## Repair (partly read, build 108)

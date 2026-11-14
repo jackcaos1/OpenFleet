@@ -366,6 +366,8 @@ struct Game::Impl {
     float dq_len = 0;                       // summierte Laenge der Schlange (2 x Radius je Schiff)
     float yaw_rate = 1.0f;                  // yawRotationRate (Klassenwert +0x1f8, begrenzt die Kurvengeschwindigkeit beim Andocken)
     float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
+    bool recrew = false;                    // +0x7ac: recrew switched on (toggle, 0x426c1d)
+    float recrew_rate = 10.0f;              // class +0x548 recrewRate
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
     bool has_site = false;                  // Bauschiff: Baustelle gewaehlt
@@ -382,6 +384,10 @@ struct Game::Impl {
     // Ausfahrt aus Werft / Dock (OutputQueueManager, Armada.exe 0x557400): das Schiff entsteht an der Hardpoint-Matrix und wird entlang seiner Front geschoben
     bool exiting = false;
     float exit_p2[3] = {0, 0, 0}, exit_dir[3] = {0, 0, 1}, exit_speed = 0;
+    bool exit_rally = false;                // new yard ship: goes to the rally point after the exit (order 39, 0x557400)
+    float exit_rally_pos[3] = {0, 0, 0};
+    bool rally_set = false;                 // yard/starbase: rally point changed by the player (+0x7d8); otherwise the default of 0x45e540
+    float rally[3] = {0, 0, 0};
     float fr_timer = 0;
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
@@ -423,7 +429,7 @@ struct Game::Impl {
   CmdPage cmd_page = CmdPage::Main;
   bool move_armed = false;
   bool attack_armed = false;
-  bool guard_armed = false, patrol_armed = false;
+  bool guard_armed = false, patrol_armed = false, rally_armed = false;
   std::map<int, Shroud> shroud;  // je Team: bereits gesehene Kartenteile (Erkunden / Suchen und Zerstoeren)
   bool transport_armed = false;
   std::vector<CinematicRequest> cinematic_requests;  // Anforderungen an die (noch fehlende) Kinosicht
@@ -1517,6 +1523,7 @@ struct Game::Impl {
     s->build_items = u.build_items;
     s->officer_gain = u.officer_gain;
     s->starbase_cls = u.class_label == "starbase";
+    s->recrew_rate = u.recrew_rate;
     s->mining_stn = u.class_label == "mining";
     s->transfer_rate = u.dilithium_transfer_rate;
     s->dock_buffer = u.docking_buffer;
@@ -1777,7 +1784,7 @@ struct Game::Impl {
   bool CmdSel(const Spawned& x) const { return x.sel && x.team == human_team; }
 
   void StopSelected() {
-    attack_armed = move_armed = transport_armed = guard_armed = patrol_armed = false;
+    attack_armed = move_armed = transport_armed = guard_armed = patrol_armed = rally_armed = false;
     if (SelCount() > 0) {
       for (Spawned& s : spawned)
         if (CmdSel(s)) {
@@ -2628,8 +2635,8 @@ struct Game::Impl {
   void WorldTap(float x, float y) {
     float o[3], d[3];
     ScreenRay(x, y, o, d);
-    const int best = (move_armed || patrol_armed) ? -1 : PickAny(o, d);
-    if (best < 0 && !move_armed && !attack_armed && !transport_armed && !guard_armed && !patrol_armed && build_armed.empty()) {  // Dilithiummond antippen: Name und Vorrat
+    const int best = (move_armed || patrol_armed || rally_armed) ? -1 : PickAny(o, d);
+    if (best < 0 && !move_armed && !attack_armed && !transport_armed && !guard_armed && !patrol_armed && !rally_armed && build_armed.empty()) {  // Dilithiummond antippen: Name und Vorrat
       int mi = -1;
       float mt = 1e30f;
       for (size_t k = 0; k < moons.size(); ++k) {
@@ -2658,6 +2665,26 @@ struct Game::Impl {
         Message(n > 0 ? "Bewacht " + t.label : "Kein gueltiges Ziel.");
       } else {
         Message("Kein Ziel getroffen.");
+      }
+      return;
+    }
+    if (rally_armed) {  // order 16 SET_RALLY (0x426ebe): the tapped point becomes the rally point of the selected yards
+      rally_armed = false;
+      if (std::fabs(d[1]) > 1e-4f) {
+        const float t = (kTapPlaneY - o[1]) / d[1];
+        if (t > 0) {
+          int n = 0;
+          for (Spawned& a : spawned)
+            if (CmdSel(a) && !a.movable && !a.build_items.empty()) { a.rally_set = true; a.rally[0] = o[0] + d[0] * t; a.rally[1] = kTapPlaneY; a.rally[2] = o[2] + d[2] * t; ++n; }
+          Message(n > 0 ? "Sammelpunkt gesetzt." : "Kein Produktionsgebaeude gewaehlt.");
+          if (n > 0) {
+            GridFx g;
+            g.pos[0] = o[0] + d[0] * t; g.pos[1] = kTapPlaneY; g.pos[2] = o[2] + d[2] * t;
+            g.size = 50.0f;
+            g.last = clock;
+            gridfx.push_back(g);
+          }
+        }
       }
       return;
     }
@@ -3318,6 +3345,21 @@ struct Game::Impl {
       if (spawned[i].team <= 0 || spawned[i].derelict || spawned[i].dying) continue;
       TeamResources& r = Res(spawned[i].team);
       if (spawned[i].starbase_cls) AccumulateCrew(&r, spawned[i].crew_rate, 1.0f, dt);
+      if (spawned[i].recrew && spawned[i].hp.alive()) {
+        // 0x45b220: amount = min(dt x recrewRate, team crew); the station takes it (0x467570 returns the overflow above its maximum), the team pool pays only what was accepted;
+        // an overflow switches recrew off. Team pool below 1 does nothing.
+        Spawned& sb = spawned[i];
+        if (r.crew >= 1.0f) {
+          float amt = dt * sb.recrew_rate;
+          if (r.crew < amt) amt = r.crew;
+          float cr = sb.hp.crew + amt, over = 0;
+          if (cr > sb.hp.crew_max) { over = cr - sb.hp.crew_max; cr = sb.hp.crew_max; }
+          SetCrew(&sb.hp, cr);
+          if (over > 0) sb.recrew = false;
+          const float left = r.crew - (amt - over);
+          r.crew = left > r.crew_max ? r.crew_max : left;
+        }
+      }
       // Bauschiff: erst am Bauplatz bezahlen und starten (0x457b80)
       if (spawned[i].has_site && spawned[i].bq.items.empty() && !spawned[i].bq.active) {
         const float dx = spawned[i].st.pos[0] - spawned[i].site[0], dz = spawned[i].st.pos[2] - spawned[i].site[2];
@@ -3940,6 +3982,18 @@ struct Game::Impl {
 
   // 0x557400 (OutputQueueManager::Update, Phase 1): das neue Schiff wird mit dockingSpeedFactor x Impulsgeschwindigkeit (0x465b50) entlang seiner Front bewegt, bis es den Punkt
   // Hardpoint + Front x 1,1 x (Radius Station + Radius Schiff) (Konstante 0x5caa50) erreicht hat; erst danach bekommt es seine Befehle (Frachter: Abbau, Werftschiffe: Sammelpunkt).
+  // Rally point of a yard (+0x7d8): changed by order 16 (SET_RALLY, 0x426ebe), otherwise the default made when the yard is created (0x45e540):
+  // position + front x 3 x radius (constant 0x5cb170 = 3.0). Y stays on the tap plane (client ships fly on it).
+  void RallyOf(const Spawned& yard, float out[3]) const {
+    if (yard.rally_set) { for (int k = 0; k < 3; ++k) out[k] = yard.rally[k]; return; }
+    float f[3];
+    ShipForward(yard.st, f);
+    const float r = 3.0f * RadiusOf(yard);
+    out[0] = yard.st.pos[0] + f[0] * r;
+    out[1] = kTapPlaneY;
+    out[2] = yard.st.pos[2] + f[2] * r;
+  }
+
   void BeginExit(size_t ship, const Spawned& station, const float hp[3], const float dir[3], bool freighter) {
     Spawned& sh = spawned[ship];
     float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
@@ -3955,6 +4009,8 @@ struct Game::Impl {
     FLEET_LOGI("DBG exit %s from (%.0f,%.0f,%.0f) dir (%.2f,%.2f,%.2f) speed %.0f to (%.0f,%.0f,%.0f)", sh.odf.c_str(), hp[0], hp[1], hp[2], fwd[0], fwd[1], fwd[2], sh.exit_speed, sh.exit_p2[0], sh.exit_p2[1], sh.exit_p2[2]);
     sh.exiting = true;
     sh.exit_freighter = freighter;
+    sh.exit_rally = !freighter;
+    if (!freighter) RallyOf(station, sh.exit_rally_pos);
     sh.st.has_target = false;
     sh.st.speed = sh.exit_speed;
   }
@@ -3969,6 +4025,9 @@ struct Game::Impl {
         sh.st.has_target = false;
         sh.hv.ok = false;  // Flugphysik beginnt mit dem Zustand am Ausgang neu
         if (sh.exit_freighter) sh.fr_state = 0;
+        // Phase 2 of 0x557400: a craft leaving a shipyard gets order 39 (go to the rally point +0x7d8)
+        if (sh.exit_rally && CanFly(sh)) { sh.auto_move = 0; SetShipTarget(&sh.st, sh.exit_rally_pos); }
+        sh.exit_rally = false;
       }
     }
   }
@@ -4224,10 +4283,14 @@ struct Game::Impl {
       st->control[4] = cmd(UiAction::Orders, "b_order", "Befehle", live);
       st->control[5] = cmd(UiAction::StandDown, "b_standdown", "Abwarten", live, sp.alert == 3);
       if (sp.freighter) st->control[6] = cmd(UiAction::Harvest, "b_harvest", "Abbauen", live);  // Freighter 0x4583b0: BUTTON_LOCATION_HARVEST, cmd 0x14
-      else if (sp.starbase_cls && !movable && sp.hp.crew_max > 0) st->control[6] = cmd(UiAction::Recrew, "b_recrew", "Besatzung", false);  // 0x45c891: Wirkung (cmd 7) nicht gelesen
+      else if (sp.starbase_cls && !movable && sp.hp.crew_max > 0) {
+        // 0x45c841..0x45c88b: aktiv, wenn der Teamvorrat an Besatzung > 0 und die Besatzung der Station unter dem Maximum liegt; gedrueckt = Schalter +0x7ac
+        const bool can = live && team_res[sp.team >= 0 && sp.team < 9 ? sp.team : 0].crew > 0 && sp.hp.crew < sp.hp.crew_max;
+        st->control[6] = cmd(UiAction::Recrew, "b_recrew", "Besatzung", can || sp.recrew, sp.recrew);
+      }
       st->control[7] = cmd(UiAction::Transport, "b_transport", "Beamen", live && sp.hp.crew_max > 0 && movable, transport_armed);
       if (producer) st->control[9] = cmd(UiAction::BuildMenu, "b_build", "Bauen", live);   // cmd 0x13 / 0x18: Bauseite
-      if (producer && !movable) st->control[10] = cmd(UiAction::Rally, "b_rally", "Sammelpunkt", false);  // 0x45c7eb: Werften und Basen; Sammelpunkte fehlen im Client
+      if (producer && !movable) st->control[10] = cmd(UiAction::Rally, "b_rally", "Sammelpunkt", live, rally_armed);  // 0x45c7eb: Werften und Basen
     } else if (cmd_page == CmdPage::Build) {
       // 0x45c2a0 Seite 2: Eintrag i auf Platz i + 1; aktiv, wenn die Technik verfuegbar ist, die Warteschlange nicht voll ist (Werften: weniger als 5) und genug Ressourcen da sind
       const TeamResources& tr = team_res[sp.team >= 0 && sp.team < 9 ? sp.team : 0];
@@ -4434,7 +4497,7 @@ struct Game::Impl {
       case UiAction::MapInfo: ShowSelectedInfo(); break;
       case UiAction::ModelView: OpenMenu(MenuKind::Maps); break;
       case UiAction::Menu: OpenMenu(MenuKind::Options); break;
-      case UiAction::Move: attack_armed = transport_armed = guard_armed = patrol_armed = false; move_armed = !move_armed; if (move_armed) Message("Ziel auf der Karte antippen."); break;
+      case UiAction::Move: attack_armed = transport_armed = guard_armed = patrol_armed = rally_armed = false; move_armed = !move_armed; if (move_armed) Message("Ziel auf der Karte antippen."); break;
       case UiAction::Attack:
         attack_armed = !attack_armed;
         move_armed = transport_armed = guard_armed = patrol_armed = false;
@@ -4490,7 +4553,15 @@ struct Game::Impl {
           if (CmdSel(x) && x.freighter) { x.fr_manual = false; if (x.dock_phase == 0) x.fr_state = 0; }
         Message("Frachter fahren zum Abbau.");
         break;
-      case UiAction::Recrew: case UiAction::Rally: Message("Noch nicht umgesetzt."); break;
+      case UiAction::Recrew:  // order 0x426c1d: toggles +0x7ac on the selected yard/starbase
+        for (Spawned& x : spawned)
+          if (CmdSel(x) && x.starbase_cls) x.recrew = !x.recrew;
+        break;
+      case UiAction::Rally:
+        rally_armed = !rally_armed;
+        attack_armed = move_armed = transport_armed = guard_armed = patrol_armed = false;
+        if (rally_armed) Message("Sammelpunkt auf der Karte antippen.");
+        break;
       case UiAction::Build0: case UiAction::Build1: case UiAction::Build2: case UiAction::Build3: case UiAction::Build4:
       case UiAction::Build5: case UiAction::Build6: case UiAction::Build7: case UiAction::Build8: case UiAction::Build9:
         QueueBuild(static_cast<int>(a) - static_cast<int>(UiAction::Build0));
@@ -5532,6 +5603,15 @@ std::string Game::DebugOrder(const std::string& kind) {
   int n = 0;
   unsigned first_station = 0;
   for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { first_station = o.id; break; }
+  if (kind == "recrew" || kind == "rally") {  // yard tests: recrew = halve the crew and switch recrew on; rally = rally point 600 m to the side
+    for (Impl::Spawned& o : s.spawned) {
+      if (o.team != s.human_team || o.movable || !o.starbase_cls) continue;
+      if (kind == "recrew") { SetCrew(&o.hp, o.hp.crew * 0.5f); o.recrew = true; }
+      else { o.rally_set = true; o.rally[0] = o.st.pos[0] + 600.0f; o.rally[1] = 0; o.rally[2] = o.st.pos[2]; }
+      ++n;
+    }
+    return kind + " set on " + std::to_string(n) + " stations";
+  }
   for (Impl::Spawned& o : s.spawned) {
     if (o.team != s.human_team || !o.movable || o.freighter) continue;
     if (kind == "scout") s.StartOrder(o, Impl::Spawned::kOrdScout, nullptr, 0);
@@ -5570,7 +5650,7 @@ std::string Game::DebugReport() const {
       }
     for (const Impl::Spawned& o : s.spawned)
       if (o.team == t && (o.mining_stn || o.starbase_cls) && !o.dying) {
-        std::snprintf(buf, sizeof buf, "  %s %u pos (%.0f,%.0f) queue %zu active %d\n", o.odf.c_str(), o.id, o.st.pos[0], o.st.pos[2], o.bq.Size(), o.bq.active ? 1 : 0);
+        std::snprintf(buf, sizeof buf, "  %s %u pos (%.0f,%.0f) queue %zu active %d crew %.0f/%.0f recrew %d pool %.0f\n", o.odf.c_str(), o.id, o.st.pos[0], o.st.pos[2], o.bq.Size(), o.bq.active ? 1 : 0, o.hp.crew, o.hp.crew_max, o.recrew ? 1 : 0, s.team_res[t].crew);
         out += buf;
       }
     for (const Impl::AiTeam& a : s.ai_teams)

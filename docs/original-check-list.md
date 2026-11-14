@@ -81,3 +81,10 @@ Verified in the code, **not yet compared with the running original**:
 - Self destruct: 5 s countdown, second press cancels; does the explosion damage ships within 300?
 - Energy: start value (full?) and recharge (`specialEnergyRate` per second?).
 - Construction rig: do the six bees start from the bays bot1..bot6 after 2 s, weld 0.5 s per point and return in the last 2 s? How do they fly (curves)? Does the structure appear progressively by triangles?
+
+## Build 108: recrew and rally point
+Verified in the code (docs/formats/orders.md), not yet compared with the running original:
+- Recrew on a starbase or shipyard: 10 crew per second from the team pool into the station, switches itself off when the station is full? Button greyed out when the pool is empty or the station is full?
+- Rally point: a new yard ship drives 3 x radius in front of the yard (default) and stops there? After "rally point" + tap on the map, do new ships go to that point? Is the point shown on the map (flag)?
+- Does the rally point also apply to the construction ship (it is built at a yard)?
+- Repair: what does the button do in the original, which objects, which rate? (not implemented)

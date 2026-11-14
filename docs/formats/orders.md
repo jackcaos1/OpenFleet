@@ -62,6 +62,25 @@ Orders that call it every frame: GUARD, SCOUT, HUNT. **Consequence:** these orde
 The PATROL order type shares the GO handler (slot 0x3c); the way the patrol path is stored was **not read**. The client implements an **assumption**: the craft flies
 between its start position and the tapped point, engaging enemies inside weapon range - 25 on the way.
 
+## Recrew and rally point (verified, build 108)
+Both belong to the yard class (shipyard and starbase, ODF keys read by 0x4561c0).
+- **Recrew** (NewOrder handler 0x426c1d): toggles the yard flag `+0x7ac`. Per frame (0x45b220) while the flag is on: when the team's crew pool is at least 1, `amount = min(dt x recrewRate, pool)`,
+  the station adds it to its own crew (0x467570 returns the part above its maximum), the pool loses only the accepted part and the flag is cleared as soon as something overflowed.
+  `recrewRate` is an ODF key of the yard class, default 10 crew per second; no shipped ODF sets it. The button (location 7, 0x45c841) is enabled when the pool is above 0 and the station crew is below its maximum, shown pressed while the flag is on.
+- **Set rally point** (handler 0x426ebe): copies the order's last point into the yard's `+0x7d8` (three floats). Default made when the yard is created (0x45e540): position + front axis x 3 x radius (constant 0x5cb170 = 3.0).
+  (A second routine, 0x45e9f0, computes 2 x radius instead; it is called from a different virtual slot and was not traced, the client uses 3 x radius.)
+- A craft leaving a yard always gets order 39 with the point `+0x7d8` (0x557400, phase 2); order 2 only when the yard no longer exists.
+- Note: with the order name table as printed above, the jump entries for 15 and 16 do the recrew toggle and the rally copy, i.e. the table of names seems shifted by one against the NewOrder jump table here; the handlers are
+  identified by what they do, not by the name.
+- Client: `Spawned::recrew`, `StepProduction`; `Spawned::rally_set/rally`, `RallyOf`, `StepExits`, tap handling `rally_armed`. Headless tests: `--human-order recrew|rally`.
+
+## Repair (partly read, NOT implemented)
+- Ships are repaired by yard-class objects with the ODF key `repairFacility` (default 1; only `zmama` sets 0) through a `RepairQueueManager` (RTTI, vtable 0x5cca3c) that shares the spline docking code (0x558240) with the mining queue.
+  Other keys of the same loader: `repairHardpoint`, `dockingBuffer` (default 90), `repairSide` (default 2, `byard2` uses 0), `buildAnimation`.
+- The queue accepts a craft only while its order type is 0x13 (0x5577f0) and it belongs to the same owner. The station state 0x10 (animation) is started when a craft reaches the head (0x45eaa0, same as for freighters).
+- Systems repair themselves everywhere in the original (health step 0x4683d0, see `ship-health.md`); what the docked repair adds (rate, hull) was **not found**. The handler 0x42a8c0 scans the craft's weapon list for a usable weapon and target
+  (0x463b70 / 0x463c10) and is not a plain "fly to the dock" routine as the name suggests.
+
 ## Other order types
 GET_REPAIR (0x42a8c0, repair queue of a facility), RECYCLE (0x42a450, decommission), SET_RALLY / GO RALLY POINT, RECREW are analysed in `docs/formats/economy.md` and the GUI document
 as far as they were read.

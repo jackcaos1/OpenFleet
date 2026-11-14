@@ -117,3 +117,7 @@ Still assumed: how a cloaked ship is hidden (rule not found), see-through look, 
 ## Build 114
 - Mining: freighters only mine moons the team has already seen (sensor range)? At the very start does a freighter built before any moon was seen stay idle? Does a moon shrink to half size while it is mined out?
 - Zoom: can you zoom in far enough to see a single ship on a large map?
+
+## Build 115
+- Mining with several freighters on one moon: the one that hits first keeps the moon until it is full; the others wait outside (30 m further out) and take turns. Does that match the original (how long does a waiting freighter wait, is the order always first come first served)?
+- Harvest after moving a freighter to another moon: does it mine the moon next to it?

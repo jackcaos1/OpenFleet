@@ -212,3 +212,10 @@ Everything in the mining chain was re-read without a symptom list. Differences f
 
 ### Zoom (client)
 The map view's camera distance is map_dist / zoom with zoom limited to 30. map_dist is sized for the whole map (max(1200, 2.4 x extent), e.g. about 30000 on 2duel), so on big maps the nearest camera distance was about 1000 m and ships could not be seen close up. The limit is now fixed at a camera distance of 50 m (`ZoomMax = max(30, map_dist / 50)`).
+
+### Mining, third pass (build 115, after the owner's test)
+- **Cause of "nobody mines, three freighters circle the moon":** the beam fires only from a hardpoint within range (120) of the moon's centre, and the moon sits 110 below the combat plane, so the craft may be only about 40 m (horizontally) off the moon's centre and
+  must be on the plane. The client's flight model flew a much larger circle (50 to 80 m) and settled at y 3 to 17, so the beam never reached; a craft that had hit once stayed the moon's user and blocked the others. The circle is now flown kinematically
+  (radius towards R at 15 m/s, angle advance 10 / r per second, y towards 0 at 10 m/s, heading along the tangent), which is what the steering of the original (velocity vector of length 10 towards a point 45 degrees ahead on the circle of radius R) converges to.
+- **Harvest command:** NewOrder MINE without a target (0x427acb) clears the freighter's moon (+0x79c) and station (+0x7a0); the handler then takes the nearest seen moon from the craft's current position. The client kept the old moon, so a freighter that was moved to another moon and told to harvest flew back
+  to the first one. With a target the order stores the station (class 0x5f8dd0) or the moon (class 0x5f8db8) from the order; the client has no targeted harvest yet.

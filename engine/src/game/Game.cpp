@@ -372,8 +372,7 @@ struct Game::Impl {
     float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
     bool recrew = false;                    // +0x7ac: recrew switched on (toggle, 0x426c1d)
     float recrew_rate = 10.0f;              // class +0x548 recrewRate
-    bool orbit_cap = false;                 // freighter circling a moon: speed cap 10 (0x42dc30 hands a velocity of length 10 to 0x42f740)
-    float orbit_saved_cap = 0;
+    bool orbiting = false;                  // freighter circling a moon (flown by StepFreighters, the flight model skips it)
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
     bool has_site = false;                  // Bauschiff: Baustelle gewaehlt
@@ -2549,7 +2548,7 @@ struct Game::Impl {
     std::vector<HoverObstacle> obs;
     for (Spawned& s : spawned) {
       if (!s.movable) continue;
-      if (s.exiting || s.dock_phase > 0) continue;  // wird gerade aus Werft / Dock geschoben (StepExits) oder folgt der Andockkurve
+      if (s.exiting || s.dock_phase > 0 || s.orbiting) continue;  // wird gerade aus Werft / Dock geschoben (StepExits) oder folgt der Andockkurve
       const bool can_fly = CanFly(s);
       if (!can_fly) StopShip(&s.st);  // Antrieb ausgefallen oder Wrack: kein Kurs, nur Ausrollen
       if (s.hodf_ok) {
@@ -3820,6 +3819,7 @@ struct Game::Impl {
       const bool mining = u.freighter && !u.derelict && !u.dying && u.hp.alive() && u.fr_moon == static_cast<int>(mk) && !u.fr_manual && u.dock_phase == 0 && u.fr_state < 4;
       if (!mining) mo.user = 0;
     }
+    for (Spawned& o : spawned) o.orbiting = false;   // set again below while a freighter circles a moon
     for (OreBeam& ob : ore_beams) ob.age += dt;
     ore_beams.erase(std::remove_if(ore_beams.begin(), ore_beams.end(), [](const OreBeam& b) { return b.age >= b.life; }), ore_beams.end());
     for (Spawned& stn : spawned) {  // Schlangeneintraege zerstoerter Frachter entfernen (0x558240: nicht mehr aufloesbare Handles werden aus der Schlange genommen)
@@ -3932,7 +3932,6 @@ struct Game::Impl {
         continue;
       }
       // Abbau-Zustand (Befehl 24, 0x42b430): voll (Rest unter 0,01) -> abliefern; kein Mond -> abliefern ab 5 Ladung, sonst Leerlauf
-      if (f.orbit_cap && f.hv.ok && (room < 0.01f || f.fr_moon < 0)) { f.hv.st.SetSpeedCap(f.orbit_saved_cap); f.orbit_cap = false; }
       if (room < 0.01f) { release(); f.fr_state = 3; continue; }
       if (f.fr_moon < 0) {
         if (f.cargo > 5.0f) f.fr_state = 3; else f.fr_state = 0;
@@ -3951,7 +3950,6 @@ struct Game::Impl {
       const float gap = D3 - rc - rm;
       if (range - 15.0f < gap) {
         f.fr_state = 1;
-        if (f.orbit_cap && f.hv.ok) { f.hv.st.SetSpeedCap(f.orbit_saved_cap); f.orbit_cap = false; }
         const float tg[3] = {m.pos[0] + dv[0] / D3 * (rc + rm), 0.0f, m.pos[2] + dv[2] / D3 * (rc + rm)};
         go(tg);
         continue;
@@ -3961,19 +3959,24 @@ struct Game::Impl {
       const float h = 0.0f - m.pos[1];
       float R = std::sqrt(std::max(0.0f, range * range - h * h)) - 10.0f;
       if (other) R += 30.0f;
-      {  // 0x42dc30: target point on the circle, 45 degrees (0x5fbc10 = pi/4) behind the craft's current angle; the original's z is the negated GL z
-        const float dxo = m.pos[0] - f.st.pos[0], dzo = f.st.pos[2] - m.pos[2];
-        const float phi = std::atan2(dzo, dxo) + 3.14159265f - 0.78539753f;
-        float tg[3] = {m.pos[0] + R * std::cos(phi), 0.0f, m.pos[2] - R * std::sin(phi)};
-        // The original does not go to this point but steers along the direction craft -> point (0x42f740 gets that unit vector x 10), so it never stops "too close to turn";
-        // the client's flight model stops near its target, so the point is pushed out along the same direction.
-        {
-          const float ex = tg[0] - f.st.pos[0], ez = tg[2] - f.st.pos[2], el = std::max(1e-3f, std::hypot(ex, ez));
-          const float far = 100.0f;
-          if (el < far) { tg[0] = f.st.pos[0] + ex / el * far; tg[2] = f.st.pos[2] + ez / el * far; }
-        }
-        if (CanFly(f)) { f.auto_move = 0; SetShipTarget(&f.st, tg); }
-        if (f.hv.ok && !f.orbit_cap) { f.orbit_saved_cap = f.hv.st.cap_speed; f.hv.st.SetSpeedCap(10.0f); f.orbit_cap = true; }
+      {  // 0x42dc30 / 0x42f740: the craft circles the moon at radius R with a speed of 10 (the velocity vector of length 10 the original hands to the steering). The client's flight model
+        // cannot hold a circle this small (its turn radius is bigger and the beam then does not reach the moon), so the circle is flown kinematically: the radius moves towards R at 15 m/s
+        // and the angle advances by 10 / r per second; the heading is the tangent. The direction of the circle is the original's (the target point lies 45 degrees behind the craft's angle).
+        float ox = f.st.pos[0] - m.pos[0], oz = f.st.pos[2] - m.pos[2];
+        float r = std::max(1.0f, std::hypot(ox, oz));
+        float th = std::atan2(oz, ox);
+        r += std::max(-15.0f * dt, std::min(15.0f * dt, R - r));
+        th += 10.0f / std::max(r, 5.0f) * dt;
+        f.st.pos[0] = m.pos[0] + r * std::cos(th);
+        f.st.pos[2] = m.pos[2] + r * std::sin(th);
+        f.st.pos[1] += std::max(-10.0f * dt, std::min(10.0f * dt, 0.0f - f.st.pos[1]));   // R is computed for the combat plane (y = 0), so the craft settles on it
+        const float hd[3] = {-std::sin(th), 0.0f, std::cos(th)};
+        ShipFromForward(hd, &f.st);
+        f.st.has_target = false;
+        f.st.speed = 10.0f;
+        for (int k = 0; k < 3; ++k) f.st.vel[k] = 0;
+        f.hv.ok = false;
+        f.orbiting = true;
       }
       f.fr_state = other ? 1 : 2;
       f.fr_timer = std::min(1.5f, f.fr_timer + dt);   // shotDelay of gminebm (crewAffectsWeaponDelay 0)
@@ -4970,7 +4973,13 @@ struct Game::Impl {
       case UiAction::BuildMenu: cmd_page = CmdPage::Build; break;
       case UiAction::Harvest:
         for (Spawned& x : spawned)
-          if (CmdSel(x) && x.freighter) { x.fr_manual = false; if (x.dock_phase == 0) x.fr_state = 0; }
+          if (CmdSel(x) && x.freighter) {
+            // NewOrder MINE without a target (0x427acb) clears the moon (+0x79c) and the station (+0x7a0): the handler then takes the nearest seen moon from where the craft is now
+            if (x.fr_moon >= 0 && x.fr_moon < static_cast<int>(moons.size()) && moons[static_cast<size_t>(x.fr_moon)].user == x.id) moons[static_cast<size_t>(x.fr_moon)].user = 0;
+            x.fr_moon = -1;
+            x.fr_manual = false;
+            if (x.dock_phase == 0) x.fr_state = 0;
+          }
         Message("Frachter fahren zum Abbau.");
         break;
       case UiAction::Recrew:  // order 0x426c1d: toggles +0x7ac on the selected yard/starbase

@@ -1,5 +1,8 @@
 #include "render/ModelRenderer.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "core/Log.h"
 #include "formats/TextureLookup.h"
 
@@ -328,6 +331,17 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
   glActiveTexture(GL_TEXTURE0);
   glEnable(GL_DEPTH_TEST);
   glFrontFace(GL_CCW);
+  std::vector<GLsizei> draw_count(batches_.size());
+  {
+    int left = tri_limit_;
+    for (size_t i = 0; i < batches_.size(); ++i) {
+      const int tris = static_cast<int>(batches_[i].index_count / 3);
+      if (left < 0) { draw_count[i] = batches_[i].index_count; continue; }
+      const int use = std::min(tris, left);
+      draw_count[i] = static_cast<GLsizei>(use * 3);
+      left -= use;
+    }
+  }
   // Durchgang 0: undurchsichtig. Durchgang 1 (nur bei Alpha-Modus "Mischen"): Flaechen mit Alphatextur, ohne Tiefenschreiben.
   // Durchgang 2: additive Effektflaechen (derzeit ungenutzt).
   for (int pass = 0; pass < 3; ++pass) {
@@ -345,7 +359,8 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
       glBlendFunc(GL_ONE, GL_ONE);
       glDepthMask(GL_FALSE);
     }
-    for (const GpuBatch& b : batches_) {
+    for (size_t bi = 0; bi < batches_.size(); ++bi) {
+      const GpuBatch& b = batches_[bi];
       const bool transparent = alpha_mode_ == 2 && b.has_alpha && !b.cutout;
       const int my_pass = (b.additive || force_additive_) ? 2 : (transparent ? 1 : 0);
       if (my_pass != pass) continue;
@@ -368,7 +383,7 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
       glUniform3fv(u_mspec_, 1, b.specular);
       glUniform1f(u_mpow_, (b.lighting == 2 && !b.team) ? std::max(b.power, 1.0f) : 0.0f);
       glBindVertexArray(b.vao);
-      glDrawElements(GL_TRIANGLES, b.index_count, GL_UNSIGNED_INT, nullptr);
+      if (draw_count[bi] > 0) glDrawElements(GL_TRIANGLES, draw_count[bi], GL_UNSIGNED_INT, nullptr);
     }
   }
   glBindVertexArray(0);

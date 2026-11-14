@@ -94,3 +94,8 @@ Verified in the code (docs/formats/orders.md), not yet compared with the running
 Now verified (see orders.md / specials.md): special energy start (full), scout map (400 m cells, nearest unexplored cell, stuck rules, no random), hunt stuck rules, GUI command -> order mapping (repair 19, scout 27, search and destroy 25), patrol (cyclic list, keeps flying), docked repair (20 crew/s, systems x15, finish rule, exit via build hardpoint), rally default (2 x radius for shipyards).
 Please check in the original: ships repair at a starbase as well as at a shipyard? Does a repairing ship fly to the centre of the yard (not to the `repair` node)? Patrol: does the ship shoot while it keeps flying? Scouting: does the ship go to the nearest unexplored 400 m cell, always in the same order on the same map?
 Still assumed: how a cloaked ship is hidden (rule not found), see-through look, bee flight paths, the weapon scan of the repair order, special classes not implemented.
+
+## Build 111: construction
+- Rig position: does the construction ship stop outside the structure on the side it came from (D = rig radius + structure radius + 10 from the centre)?
+- Station: appears triangle by triangle (no growing, no scaling)? Which order (mesh by mesh)? Any sparks at all?
+- Bees: do they face the station while welding, is the beam pointed at a point on the surface, how do they hover (sphere around the centre)?

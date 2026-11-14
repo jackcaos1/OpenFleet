@@ -167,3 +167,20 @@ Geometry (MiningQueueManager, created in 0x45a420): the dock hardpoint HP with a
   The moon's sprite node of the same name is not affected. The client builds a second renderer for the `*mining` models for this.
 - A cinematic request (0x47aef0) is posted for the local player when a freighter starts unloading; the raw arguments of the original call are 0, 0, station, freighter, 4, 3, `0x5cd560`, 3.0, 0 (last argument first); the director itself is not implemented.
 - The station animation state 0x10 (SOD animation channels of the mining station models) is not played: the client does not animate station models yet.
+
+## Construction: approach point and animation (read 14.11.2026, build 111)
+**Where the rig stops (BUILD handler 0x42b040, verified).** Not in the middle of the site. Each frame the target point T lies on the line from the site centre (`+0x7e8`) towards the craft, at
+D = craft radius + max(half diagonal of the structure class's bounding box in x/z, class `+0x1e0`) + 10 (0x5ca7bc), at the craft's own height. `+0x1e0` is **not** `footprintBuffer`: the class copies the
+model's bounding sphere (centre `+0x1d4..`, radius `+0x1e0`) from the model at load (0x46b0df). Construction starts when the craft is already inside D, or within 15 (0x5ca7c0) of T, or within `tooCloseToTurn` of T while its
+speed is at most 2.0; otherwise it flies to T. While building it holds its position (the handler goes to its own position). Client: `SiteStandoff`, `StepProduction`.
+
+**Structure (BuildingEffect, verified).** The effect draws the structure's real model (class `+0x1e4`) at full size and only the first `n` triangles: `n = floor(progress x N)`, N = triangle count of the model, set through 0x50d7b0 / 0x58ce40.
+The order is the model's node traversal (a node, then its children, mesh triangles in file order). No scaling, no placeholder model. `weldingSpriteName` (spark sprite along the edges of newly revealed triangles, 0x50d850) is empty in every ODF,
+so the original draws no edge sparks; `weldingSpeed` (default 1.0), `weldingAnimSpeed` (4.0), `weldingRadius` are read from the class. Client: `ModelRenderer::SetTriangleLimit`, `RevealedTriangles`. The client counts the triangles of the batches it draws (hidden LOD / borg nodes are not in the count; the original counts the whole model).
+
+**Worker bee (0x518250, read).** Record `+0x3c` state, `+0x40` timer, `+0x78` anchor = site + bounding sphere centre, `+0x84` hover distance = max(15 (0x5d2b00), sphere radius), `+0x5c` weld point, `+0x50` hover point.
+State 0 waits `timeUntilTakeoff`; state 1 flies to home hardpoint + front x (rig radius + 10 (0x5d2af4)); on arrival (squared distance < 1.0) a weld point is chosen (0x50d2f0: a random triangle among the revealed ones, or among the first min(N, 10)
+while fewer than 10 are revealed, a random corner of it, in world space) and the hover point = anchor + normalize(weld point - anchor) x hover; state 3 flies there; state 4 waits `timeWelding`, the beam
+(`weldingBeamSprite`, width `weldingBeamWidth`; 0x518dc0 -> 0x597370) runs from the bee to the weld point; then a new weld point is chosen. Speed limit 80 m/s (0x5d2af0). Orientation: while flying along its heading (curve tangent, look-at matrix 0x55d840),
+in state 4 unchanged, in the bay states (0, 1, 6, 7) the hardpoint's orientation. So the bees face the structure and the beam ends on its surface. States 5 (to the exit point), 6 (to the bay), 7 (closing, `timeUntilClosure`, then the bee is deleted) mirror 1 and 0.
+**Assumed:** what recalls the bees (the client does it when `timeUntilClosure` seconds of the build are left); the smoothing and the random wobble of the bee's flight (the original adds a leash and jitter, 0x5189a6..0x518c25) are not ported.

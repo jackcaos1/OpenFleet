@@ -2060,7 +2060,6 @@ struct Game::Impl {
     s.ord_think = 0.25f;
     const bool armed = !s.weapons.empty() && s.hp.sys_ok(kWeapons);
     const float reach = armed ? WeaponReach(s) : 0.0f;
-    const float scan = s.hp.sys_ok(kSensors) ? s.scan : s.scan_damaged;
     if (s.order == Spawned::kOrdGuard) {
       const int g = FindById(s.ord_target);
       if (g < 0 || !spawned[static_cast<size_t>(g)].hp.alive()) {  // Schutzobjekt weg: Stopp (0x4286b0)
@@ -2803,7 +2802,6 @@ struct Game::Impl {
           rig.site[0] = o[0] + d[0] * t; rig.site[1] = kTapPlaneY; rig.site[2] = o[2] + d[2] * t;
           rig.has_site = true;
           if (rig.bq.active) { Message("Das Bauschiff baut noch."); rig.has_site = false; return; }
-          if (CanFly(rig)) { rig.auto_move = 0; SetShipTarget(&rig.st, rig.site); }
           GridFx g;
           g.pos[0] = rig.site[0]; g.pos[1] = kTapPlaneY; g.pos[2] = rig.site[2];
           g.size = 50.0f;
@@ -3379,6 +3377,145 @@ struct Game::Impl {
     }
   }
 
+  // ---- Construction animation: worker bees (WorkerBee 0x518250) and the revealed structure (BuildingEffect 0x50c950 / 0x50caa0) ----
+  struct Bee {
+    int state = 0;                 // 0 waiting for takeoff, 1 out of the bay, 3 to the hover point, 4 welding, 5 back to the bay exit, 6 into the bay, 7 closing, 8 gone
+    float timer = 0;
+    float pos[3] = {0, 0, 0};
+    float front[3] = {0, 0, 1}, up[3] = {0, 1, 0};
+    float weld[3] = {0, 0, 0};     // weld point (+0x5c): a vertex of a revealed triangle
+    float hover[3] = {0, 0, 0};    // hover point (+0x50): on the bounding sphere in the direction of the weld point
+  };
+  struct BuildFx {
+    std::vector<Bee> bees;
+    bool init = false;
+  };
+  std::map<unsigned, BuildFx> build_fx;
+
+  // Triangles revealed so far: first n of the model's triangles in drawing order, n = floor(progress x N) (0x50c950 / 0x50d7b0, drawn through 0x58ce40).
+  int RevealedTriangles(const Spawned& rig, int* total_out = nullptr) {
+    float sc = 1.0f;
+    const std::string sod = SodOfOdf(rig.bq.items.front().odf, &sc);
+    if (sod.empty() || !EnsureSpawnModel(sod)) return 0;
+    const int n = static_cast<int>(spawn_models[sod].tris.size() / 9);
+    if (total_out) *total_out = n;
+    return static_cast<int>(std::floor(std::max(0.0f, std::min(1.0f, rig.bq.Progress())) * static_cast<float>(n)));
+  }
+
+  void BeePickTarget(const Spawned& rig, Bee* b, int revealed, int total) {
+    // 0x50d2f0: random triangle among the revealed ones (fewer than 10 revealed: the first min(N, 10)), random corner of it, world position.
+    float sc = 1.0f;
+    const std::string sod = SodOfOdf(rig.bq.items.front().odf, &sc);
+    const SpawnModel& m = spawn_models[sod];
+    int range = revealed;
+    if (range < 10) range = std::min(total, 10);
+    range = std::max(1, range);
+    const int t = std::min(range - 1, static_cast<int>(rng.F01() * static_cast<float>(range)));
+    const int c = std::min(2, static_cast<int>(rng.F01() * 3.0f));
+    for (int k = 0; k < 3; ++k) b->weld[k] = rig.site[k] + m.tris[static_cast<size_t>(t) * 9 + static_cast<size_t>(c) * 3 + static_cast<size_t>(k)] * sc;
+    // Anchor = structure centre (site + centre of the model's bounding sphere), hover = max(15 (0x5d2b00), sphere radius) from it towards the weld point (0x519010, 0x518250 state 1).
+    float centre[3];
+    for (int k = 0; k < 3; ++k) centre[k] = rig.site[k] + 0.5f * (m.bounds[k] + m.bounds[k + 3]) * sc;
+    float d[3];
+    for (int k = 0; k < 3; ++k) d[k] = b->weld[k] - centre[k];
+    float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (l * l < 0.01f) { d[0] = rng.F01() - 0.5f; d[1] = rng.F01() - 0.5f; d[2] = rng.F01() - 0.5f; l = std::max(1e-3f, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])); }
+    const float hov = std::max(15.0f, m.radius * sc);
+    for (int k = 0; k < 3; ++k) b->hover[k] = centre[k] + d[k] / l * hov;
+  }
+
+  void StepBuildFx(float dt) {
+    for (auto it = build_fx.begin(); it != build_fx.end();) {  // forget finished constructions
+      const int ri = FindById(it->first);
+      if (ri < 0 || !spawned[static_cast<size_t>(ri)].bq.active || spawned[static_cast<size_t>(ri)].bq.items.empty()) it = build_fx.erase(it); else ++it;
+    }
+    for (Spawned& rig : spawned) {
+      if (!rig.movable || !rig.bq.active || rig.bq.items.empty() || rig.dying) continue;
+      int total = 0;
+      const int revealed = RevealedTriangles(rig, &total);
+      if (total <= 0) continue;
+      BuildFx& fx = build_fx[rig.id];
+      int nb = 6;
+      float takeoff = 2.0f, weld_t = 0.5f, closure = 2.0f;
+      std::vector<std::string> homes;
+      if (const OdfObject* od = odf_lib ? odf_lib->Get(rig.odf_l) : nullptr) {
+        od->GetInt("numberOfWorkerBees", &nb);
+        od->GetFloat("timeUntilTakeoff", &takeoff);
+        od->GetFloat("timeWelding", &weld_t);
+        od->GetFloat("timeUntilClosure", &closure);
+        homes = od->GetStrings("workerBeeHardpoints");
+      }
+      nb = std::max(0, std::min(nb, 12));
+      if (!fx.init) {
+        fx.init = true;
+        fx.bees.assign(static_cast<size_t>(nb), Bee());
+        for (Bee& b : fx.bees) b.timer = takeoff;   // 0x519010: timer = timeUntilTakeoff
+      }
+      const float remaining = rig.bq.remaining;
+      for (size_t i = 0; i < fx.bees.size(); ++i) {
+        Bee& b = fx.bees[i];
+        float home[3] = {rig.st.pos[0], rig.st.pos[1], rig.st.pos[2]}, hd[3] = {0, 0, 1};
+        if (i < homes.size()) HardpointWorld(rig, ToLowerAscii(homes[i]), home, hd);
+        const float hl = std::max(1e-4f, std::sqrt(hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]));
+        float outp[3];   // 0x518250 state 1: home hardpoint + front x (rig radius + 10 (0x5d2af4))
+        for (int k = 0; k < 3; ++k) outp[k] = home[k] + hd[k] / hl * (RadiusOf(rig) + 10.0f);
+        auto fly = [&](const float to[3], bool turn) {   // at most 80 m/s (0x5d2af0), faces its heading while flying
+          float d[3];
+          for (int k = 0; k < 3; ++k) d[k] = to[k] - b.pos[k];
+          const float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+          const float step = std::min(80.0f * dt, l);
+          if (l > 1e-4f) {
+            for (int k = 0; k < 3; ++k) b.pos[k] += d[k] / l * step;
+            if (turn) for (int k = 0; k < 3; ++k) b.front[k] = d[k] / l;
+          }
+          return l - step;   // distance left
+        };
+        auto reached = [&](const float to[3]) {
+          const float d0 = b.pos[0] - to[0], d1 = b.pos[1] - to[1], d2 = b.pos[2] - to[2];
+          return d0 * d0 + d1 * d1 + d2 * d2 < 1.0f;   // 0x5d2af8
+        };
+        if (b.state == 0) {
+          for (int k = 0; k < 3; ++k) { b.pos[k] = home[k]; b.front[k] = hd[k] / hl; }
+          b.timer -= dt;
+          if (b.timer < 0) b.state = 1;
+        } else if (b.state == 1) {
+          fly(outp, true);
+          if (reached(outp)) { BeePickTarget(rig, &b, revealed, total); b.state = 3; }
+        } else if (b.state == 3) {
+          fly(b.hover, true);
+          if (reached(b.hover)) { b.state = 4; b.timer = weld_t; }
+        } else if (b.state == 4) {   // keeps its heading, the beam goes to the weld point
+          b.timer -= dt;
+          if (b.timer < 0) { BeePickTarget(rig, &b, revealed, total); b.state = 3; }
+        } else if (b.state == 5) {
+          fly(outp, true);
+          if (reached(outp)) b.state = 6;
+        } else if (b.state == 6) {
+          fly(home, true);
+          if (reached(home)) { b.state = 7; b.timer = closure; }
+        } else if (b.state == 7) {
+          for (int k = 0; k < 3; ++k) { b.pos[k] = home[k]; b.front[k] = hd[k] / hl; }
+          b.timer -= dt;
+          if (b.timer < 0) b.state = 8;
+        }
+        // ASSUMED: the rig recalls the bees when only timeUntilClosure seconds of the construction are left (the trigger of states 5..7 was not read)
+        if (remaining <= closure && (b.state == 1 || b.state == 3 || b.state == 4)) b.state = 5;
+      }
+    }
+  }
+
+  // D of the BUILD handler (see StepProduction): craft radius + max(bbox half diagonal, bounding sphere radius) + 10.
+  float SiteStandoff(const Spawned& rig) {
+    float sc = 1.0f, E = 100.0f;
+    const std::string sod = SodOfOdf(rig.site_odf, &sc);
+    if (!sod.empty() && EnsureSpawnModel(sod)) {
+      const SpawnModel& m = spawn_models[sod];
+      const float hx = 0.5f * (m.bounds[3] - m.bounds[0]) * sc, hz = 0.5f * (m.bounds[5] - m.bounds[2]) * sc;
+      E = std::max(std::hypot(hx, hz), m.radius * sc);
+    }
+    return RadiusOf(rig) + E + 10.0f;
+  }
+
   void StepProduction(float dt) {
     for (size_t i = 0; i < spawned.size(); ++i) {
       if (spawned[i].team <= 0 || spawned[i].derelict || spawned[i].dying) continue;
@@ -3399,14 +3536,30 @@ struct Game::Impl {
           r.crew = left > r.crew_max ? r.crew_max : left;
         }
       }
-      // Bauschiff: erst am Bauplatz bezahlen und starten (0x457b80)
-      if (spawned[i].has_site && spawned[i].bq.items.empty() && !spawned[i].bq.active) {
-        const float dx = spawned[i].st.pos[0] - spawned[i].site[0], dz = spawned[i].st.pos[2] - spawned[i].site[2];
-        if (std::sqrt(dx * dx + dz * dz) < 150.0f) {
+      // Construction ship, BUILD handler 0x42b040 (VERIFIED): the target point T lies on the line from the site centre towards the craft at the distance
+      // D = craft radius + max(half diagonal of the structure's bounding box in x/z, radius of its bounding sphere) + 10 (0x5ca7bc), at the craft's own height.
+      // It starts when it is already inside D, or within 15 (0x5ca7c0) of T, or within tooCloseToTurn of T while it hardly moves (speed <= 2); otherwise it flies to T.
+      // The rig therefore stays outside the structure; cost is taken when it starts (0x457b80).
+      if (spawned[i].movable && spawned[i].has_site && spawned[i].bq.items.empty() && !spawned[i].bq.active && CanFly(spawned[i])) {
+        Spawned& rg = spawned[i];
+        const float D = SiteStandoff(rg);
+        float dv[3];
+        for (int k = 0; k < 3; ++k) dv[k] = rg.st.pos[k] - rg.site[k];
+        const float L = std::sqrt(dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]);
+        const float u[3] = {L > 1e-3f ? dv[0] / L : 0.0f, L > 1e-3f ? dv[1] / L : 0.0f, L > 1e-3f ? dv[2] / L : 1.0f};
+        float T[3] = {rg.site[0] + u[0] * D, rg.st.pos[1], rg.site[2] + u[2] * D};
+        const float dT = std::sqrt((T[0] - rg.st.pos[0]) * (T[0] - rg.st.pos[0]) + (T[1] - rg.st.pos[1]) * (T[1] - rg.st.pos[1]) + (T[2] - rg.st.pos[2]) * (T[2] - rg.st.pos[2]));
+        const float tight = rg.hodf_ok ? rg.hodf.tooCloseToTurn : 50.0f;
+        const bool start = L <= D || dT <= 15.0f || (dT <= tight && rg.st.speed <= 2.0f);
+        if (start) {
+          StopShip(&rg.st);   // while building the rig holds its position (0x42b0bd: go to its own position)
           QueueItem it;
-          it.odf = spawned[i].site_odf;
-          it.cost = CostOf(it.odf, spawned[i].team);
-          spawned[i].bq.Enqueue(it);
+          it.odf = rg.site_odf;
+          it.cost = CostOf(it.odf, rg.team);
+          rg.bq.Enqueue(it);
+        } else {
+          rg.auto_move = 0;
+          SetShipTarget(&rg.st, T);
         }
       }
       if (spawned[i].bq.items.empty()) continue;
@@ -3932,7 +4085,6 @@ struct Game::Impl {
       for (int k = 0; k < 3; ++k) p.site[k] = site[k];
       p.has_site = true;
       p.auto_move = 0;
-      SetShipTarget(&p.st, p.site);
     } else {
       QueueItem it;
       it.odf = e.unit;
@@ -5005,6 +5157,7 @@ void Game::OnFrame(double dt) {
     s.StepExits(static_cast<float>(std::min(dt, 0.1)));
     s.StepAi(static_cast<float>(std::min(dt, 0.1)));
     s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
+    s.StepBuildFx(static_cast<float>(std::min(dt, 0.1)));
     s.StepFreighters(static_cast<float>(std::min(dt, 0.1)));
     s.StepRepairs(static_cast<float>(std::min(dt, 0.1)));
     struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
@@ -5089,109 +5242,71 @@ void Game::OnFrame(double dt) {
       s.grid_markers.Draw(proj * view, 1.0f, true);
       s.grid_markers2.Draw(proj * view, 1.0f, true);
     }
-    {  // Bau-Animation (Nutzerwunsch; Annahme, das Original (BuildingEffect, WorkerBee) ist nicht nachgebaut): wachsende Station am Bauplatz, sechs Arbeiter kreisen und schweissen
-      std::vector<MarkerRenderer::Marker> beams;
-      float beam_len = 0;
-      for (const Impl::Spawned& rig : s.spawned) {
+    {  // Bau-Animation nach dem Original: BuildingEffect (Dreiecke werden der Reihe nach sichtbar, 0x50c950 / 0x50caa0) und WorkerBee (0x518250); Bienenablauf siehe StepBuildFx
+      for (Impl::Spawned& rig : s.spawned) {
         if (!rig.movable || !rig.bq.active || rig.bq.items.empty() || rig.dying) continue;
         float sc = 1.0f;
         const std::string sod = s.SodOfOdf(rig.bq.items.front().odf, &sc);
         if (sod.empty() || !s.EnsureSpawnModel(sod)) continue;
-        const float prog = std::max(0.0f, std::min(1.0f, rig.bq.Progress()));
-        const float fp = s.FootprintRadius(rig.bq.items.front().odf);
+        // The structure is the real model at full size; BuildingEffect shows only the first floor(progress x N) triangles (Armada.exe 0x50c950 / 0x58ce40).
         ShipState st;
         for (int k = 0; k < 3; ++k) st.pos[k] = rig.site[k];
         st.pos[1] = 0.0f;
         Mat4 m, r;
-        const float grow = 0.15f + 0.85f * prog;
-        ShipMatrices(st, sc * grow, &m, &r);
+        ShipMatrices(st, sc, &m, &r);
         const Impl::SpawnModel& sm = s.spawn_models[sod];
         const float* c = kMapTeamColors[rig.team >= 0 && rig.team < 9 ? rig.team : 0];
         sm.r->SetTeamColor(c[0], c[1], c[2]);
+        sm.r->SetTriangleLimit(s.RevealedTriangles(rig));
         sm.r->Draw(proj * view * m, rot * r, &m);
-        // Arbeiter (WorkerBee, Armada.exe 0x518250 mit Zustaenden 0..7; Parameter aus der ODF des Bauschiffs, ConstructionRigClass 0x454b70):
-        // numberOfWorkerBees, workerBeeName (Standard fbee), workerBeeHardpoints (Heimatpunkte bot1..), weldingBeamWidth, timeUntilTakeoff, timeWelding,
-        // timeUntilClosure, weldingRadius. ANNAHME: Flugbahnen (im Original Kurven, 0x58c9d0), Schweisspunkte (0x50d2f0) und Fluggeschwindigkeit sind nicht gelesen;
-        // hier: Start nach timeUntilTakeoff vom Heimatpunkt, danach Flug zu Zufallspunkten auf dem wachsenden Bauwerk, je timeWelding Sekunden schweissen,
-        // in den letzten timeUntilClosure Sekunden zurueck zum Heimatpunkt.
+        sm.r->SetTriangleLimit(-1);
+        float beam_w = 1.0f;
         std::string bee_odf = "fbee";
-        int nb = 6;
-        float takeoff = 2.0f, weld_t = 0.5f, closure = 2.0f, beam_w = 1.0f, spark = 0.5f;
-        std::vector<std::string> homes;
         if (const OdfObject* od = s.odf_lib ? s.odf_lib->Get(rig.odf_l) : nullptr) {
           od->GetString("workerBeeName", &bee_odf);
-          od->GetInt("numberOfWorkerBees", &nb);
-          od->GetFloat("timeUntilTakeoff", &takeoff);
-          od->GetFloat("timeWelding", &weld_t);
-          od->GetFloat("timeUntilClosure", &closure);
           od->GetFloat("weldingBeamWidth", &beam_w);
-          od->GetFloat("weldingRadius", &spark);
-          homes = od->GetStrings("workerBeeHardpoints");
         }
         const std::string bee_sod = s.SodOfOdf(ToLowerAscii(bee_odf));
-        const float total = std::max(0.1f, rig.bq.total);
-        const float elapsed = prog * total;
-        const float fp_r = std::max(30.0f, 0.5f * fp) * grow;
-        const float bee_speed = 90.0f;
-        auto hash = [](unsigned a, unsigned b, unsigned c) {
-          unsigned h = a * 2654435761u ^ (b + 0x9e3779b9u) * 40503u ^ (c + 1u) * 2246822519u;
-          h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
-          return static_cast<float>(h & 0xffffu) / 65535.0f;
-        };
-        for (int i = 0; i < nb && i < 12; ++i) {
-          float home[3] = {rig.st.pos[0], rig.st.pos[1], rig.st.pos[2]}, hd[3];
-          if (static_cast<size_t>(i) < homes.size()) s.HardpointWorld(rig, ToLowerAscii(homes[static_cast<size_t>(i)]), home, hd);
-          float pos[3] = {home[0], home[1], home[2]};
-          bool welding = false;
-          float tgt[3] = {0, 0, 0};
-          if (elapsed >= takeoff && elapsed < total - closure) {
-            const float cyc_start = takeoff;
-            float tt = elapsed - cyc_start, from[3] = {home[0], home[1], home[2]};
-            for (unsigned k = 0; k < 4000; ++k) {
-              const float a = hash(rig.id, static_cast<unsigned>(i), k * 3) * 6.2831853f;
-              const float rr = fp_r * (0.3f + 0.7f * hash(rig.id, static_cast<unsigned>(i), k * 3 + 1));
-              const float to[3] = {rig.site[0] + std::cos(a) * rr, 2.0f + fp_r * 0.6f * hash(rig.id, static_cast<unsigned>(i), k * 3 + 2), rig.site[2] + std::sin(a) * rr};
-              const float dist = std::sqrt((to[0] - from[0]) * (to[0] - from[0]) + (to[1] - from[1]) * (to[1] - from[1]) + (to[2] - from[2]) * (to[2] - from[2]));
-              const float fly = dist / bee_speed;
-              if (tt < fly) {
-                const float u = tt / std::max(1e-3f, fly);
-                for (int c = 0; c < 3; ++c) pos[c] = from[c] + (to[c] - from[c]) * u;
-                pos[1] += 8.0f * std::sin(u * 3.14159265f);
-                break;
-              }
-              tt -= fly;
-              if (tt < weld_t) { for (int c = 0; c < 3; ++c) { pos[c] = to[c]; tgt[c] = to[c]; } welding = true; break; }
-              tt -= weld_t;
-              for (int c = 0; c < 3; ++c) from[c] = to[c];
-            }
-          } else if (elapsed >= total - closure && elapsed < total) {
-            const float u = (elapsed - (total - closure)) / std::max(1e-3f, closure);
-            const float from[3] = {rig.site[0], 8.0f, rig.site[2]};
-            for (int c = 0; c < 3; ++c) pos[c] = from[c] + (home[c] - from[c]) * u;
-          }
+        const auto fxit = s.build_fx.find(rig.id);
+        if (fxit == s.build_fx.end()) continue;
+        for (const Impl::Bee& b : fxit->second.bees) {
+          if (b.state >= 8) continue;
           if (!bee_sod.empty() && s.EnsureSpawnModel(bee_sod)) {
             ShipState bs;
-            for (int c = 0; c < 3; ++c) bs.pos[c] = pos[c];
-            bs.yaw = rig.st.yaw;
+            for (int k = 0; k < 3; ++k) { bs.pos[k] = b.pos[k]; bs.b_front[k] = b.front[k]; bs.b_up[k] = b.up[k]; }
+            // up = world up made orthogonal to the heading (any perpendicular when heading straight up or down)
+            const float dp = b.front[1];
+            if (std::fabs(dp) > 0.98f) { bs.b_up[0] = 0; bs.b_up[1] = 0; bs.b_up[2] = 1; } else { bs.b_up[0] = -b.front[0] * dp; bs.b_up[1] = 1.0f - dp * dp; bs.b_up[2] = -b.front[2] * dp; const float ul = std::sqrt(bs.b_up[0] * bs.b_up[0] + bs.b_up[1] * bs.b_up[1] + bs.b_up[2] * bs.b_up[2]); for (float& q : bs.b_up) q /= ul; }
+            bs.has_basis = true;
             Mat4 bm, br;
             ShipMatrices(bs, rig.scale, &bm, &br);
             const Impl::SpawnModel& bsm = s.spawn_models[bee_sod];
             bsm.r->SetTeamColor(c[0], c[1], c[2]);
             bsm.r->Draw(proj * view * bm, rot * br, &bm);
           }
-          if (welding) {  // Schweissstrahl: von Arbeiter zum Punkt (kurz), Funke am Punkt (weldingRadius)
-            MarkerRenderer::Marker mk;
-            for (int c = 0; c < 3; ++c) mk.pos[c] = tgt[c];
-            mk.dir[0] = 0; mk.dir[1] = 1; mk.dir[2] = 0;
-            mk.color[0] = 1.0f; mk.color[1] = 0.85f; mk.color[2] = 0.4f;
-            beams.push_back(mk);
-            beam_len = std::max(beam_len, 3.0f * spark + beam_w);
+          if (b.state == 4 && s.source) {   // welding beam (sprite weldbeam, 0x518dc0 -> 0x597370): from the bee to its weld point on the structure
+            float d[3] = {b.weld[0] - b.pos[0], b.weld[1] - b.pos[1], b.weld[2] - b.pos[2]};
+            const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (len > 1e-3f) {
+              for (float& q : d) q /= len;
+              const float cf[3] = {-rot.m[2], -rot.m[6], -rot.m[10]};   // camera view direction in the world
+              float sd[3] = {d[1] * cf[2] - d[2] * cf[1], d[2] * cf[0] - d[0] * cf[2], d[0] * cf[1] - d[1] * cf[0]};
+              const float sl = std::sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
+              if (sl > 1e-4f) {
+                const float w = 0.5f * std::max(beam_w, dist / 900.0f) / sl;   // visible at any zoom (client choice)
+                for (float& q : sd) q *= w;
+                const int frame = static_cast<int>(s.clock * 10.0) & 3;
+                const float u0 = frame * 0.25f, u1 = u0 + 0.25f;
+                const float P0[3] = {b.pos[0] - sd[0], b.pos[1] - sd[1], b.pos[2] - sd[2]}, P1[3] = {b.pos[0] + sd[0], b.pos[1] + sd[1], b.pos[2] + sd[2]};
+                const float Q0[3] = {b.weld[0] - sd[0], b.weld[1] - sd[1], b.weld[2] - sd[2]}, Q1[3] = {b.weld[0] + sd[0], b.weld[1] + sd[1], b.weld[2] + sd[2]};
+                std::vector<float> mesh = {P0[0], P0[1], P0[2], u0, 0, Q0[0], Q0[1], Q0[2], u1, 0, Q1[0], Q1[1], Q1[2], u1, 1,
+                                           P0[0], P0[1], P0[2], u0, 0, Q1[0], Q1[1], Q1[2], u1, 1, P1[0], P1[1], P1[2], u0, 1};
+                const float tint[3] = {1.0f, 1.0f, 1.0f};
+                s.effects.DrawMesh(proj, view, mesh, "weldbeam", tint, 1.0f, *s.source);
+              }
+            }
           }
         }
-      }
-      if (!beams.empty()) {
-        s.build_markers.Set(beams, beam_len);
-        s.build_markers.Draw(proj * view, 4.0f);
       }
     }
     for (const Impl::Fireball& f : s.fireballs) {

@@ -51,6 +51,9 @@ class ModelRenderer {
     float prng[32][2] = {};      // Abfallbeginn, Abfallbereich
   };
   static void SetSceneLighting(const SceneLighting& l, const Mat4& view_rot);
+  // BuildingEffect (Armada.exe 0x50caa0 / 0x58ce40): only the first n triangles of the model, counted over the batches in drawing order, are drawn (-1 = all).
+  void SetTriangleLimit(int n) { tri_limit_ = n; }
+  int TriangleCount() const { int t = 0; for (const GpuBatch& b : batches_) t += static_cast<int>(b.index_count / 3); return t; }
   void SetOpacity(float a) { opacity_ = a; }   // < 1: all opaque faces are blended (cloaked ships)
   void SetLit(bool on) { lit_ = on; }   // false: Himmelskasten usw. ohne Szenenlicht
   // mvp: Projektion*Ansicht*Modell, normal_rot: nur die Drehung des Modells.
@@ -81,6 +84,7 @@ class ModelRenderer {
   int alpha_mode_ = 0;
   bool lit_ = true;
   float opacity_ = 1.0f;
+  int tri_limit_ = -1;
   GLint u_opacity_ = -1;
   GLint u_mspec_ = -1, u_mpow_ = -1, u_amb_ = -1, u_mamb_ = -1, u_mdiff_ = -1, u_nl_ = -1, u_ldir_ = -1, u_lcol_ = -1, u_model_ = -1, u_vrot_ = -1, u_np_ = -1, u_origin_ = -1, u_ppos_ = -1, u_pcol_ = -1, u_prng_ = -1;
   bool force_additive_ = false;

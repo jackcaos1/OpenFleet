@@ -178,12 +178,17 @@ struct Builder {
   }
 
   // Schaltflaeche mit Symbol und Kurzbeschriftung in Rechteck r (Pixel).
-  void Button(UiAction action, const std::string& icon, const std::string& label, UiRect r, bool active, bool enabled) {
+  void Button(UiAction action, const std::string& icon, const std::string& label, UiRect r, bool active, bool enabled, float progress = -1.0f) {
     Solid(r.x, r.y, r.w, r.h, 0.03f, 0.05f, 0.09f, 1.0f);
     if (icon.size() > 2 && icon[0] == 'b' && icon[1] == '_') Sprite(icon, r.x, r.y, r.w, r.h);
     else if (!icon.empty()) Texture(icon, r.x, r.y, r.w, r.h);
     if (active) Solid(r.x, r.y, r.w, r.h, 0.1f, 0.85f, 0.35f, 0.38f);
     if (!enabled) Solid(r.x, r.y, r.w, r.h, 0.0f, 0.0f, 0.0f, 0.62f);
+    if (progress >= 0.0f) {
+      const float bh = std::max(3.0f, r.h * 0.12f);
+      Solid(r.x, r.y, r.w, bh, 0.0f, 0.0f, 0.0f, 0.8f);
+      Solid(r.x, r.y, r.w * std::min(1.0f, progress), bh, 0.1f, 0.6f, 1.0f, 1.0f);
+    }
     if (!label.empty()) {
       float th = std::max(8.0f, r.h * 0.3f);
       float tw = TextW(label, th);
@@ -233,19 +238,32 @@ void DrawShips(Builder& b, const GuiCfg& c, const std::vector<HudShip>& ships, f
       while (t.size() > 1 && b.TextW(t, th) > q[2] * s) PopUtf8(&t);
       b.Text(t, ix + q[0] * s, iy + q[1] * s, th, r, g, bl);
     };
-    text("infoSingleClassTextInformationArea", sh.status.empty() ? sh.cls : sh.cls + "  " + sh.status, 1.0f, 1.0f, 1.0f);
+    if (sh.dilithium >= 0) {  // Dilithiummond: Name, Drahtgitter (<odf>w5), Vorratsbalken
+      if (R("infoSingleNameTextBackgroundArea", a)) b.Sprite("name_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
+      text("infoSingleNameTextInformationArea", sh.name, 1.0f, 1.0f, 1.0f);
+      if (R("infoSingleDilithiumBarArea", a)) b.SpriteBar("large_dilithium_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.dilithium, 0.0f, 0.5f, 1.0f);
+      if (R("infoSingleWireframeIconArea", a)) b.SpriteBar(sh.wire + "w5", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1.0f, 1, 1, 1);
+      return;
+    }
+    // Textfarben der Rassen-cfg (gui_rom / gui_kli / gui_bor: infoSingle*TextColor), Vorgabe weiss
+    auto col = [&](const char* key, float o[3]) { o[0] = o[1] = o[2] = 1.0f; c.Numbers(key, 3, o); };
+    float cc[3], cn[3], ck[3], co[3];
+    col("infoSingleClassTextColor", cc); col("infoSingleNameTextColor", cn); col("infoSingleCrewTextColor", ck); col("infoSingleOfficerTextColor", co);
+    text("infoSingleClassTextInformationArea", sh.status.empty() ? sh.cls : sh.cls + "  " + sh.status, cc[0], cc[1], cc[2]);
     if (R("infoSingleNameTextBackgroundArea", a)) b.Sprite("name_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleNameTextInformationArea", sh.name, 1.0f, 1.0f, 1.0f);
+    text("infoSingleNameTextInformationArea", sh.name, cn[0], cn[1], cn[2]);
     if (R("infoSingleCrewTextBackgroundArea", a)) b.Sprite("crew_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleCrewTextLabelArea", "Besatzung", 1, 1, 1, 8);
-    text("infoSingleCrewTextInformationArea", std::to_string(sh.crew) + "/" + std::to_string(sh.crew_max), 1, 1, 1);
+    text("infoSingleCrewTextLabelArea", "Besatzung", ck[0], ck[1], ck[2], 8);
+    text("infoSingleCrewTextInformationArea", std::to_string(sh.crew) + "/" + std::to_string(sh.crew_max), ck[0], ck[1], ck[2]);
     if (R("infoSingleOfficerTextBackgroundArea", a)) b.Sprite("officer_label_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s);
-    text("infoSingleOfficerTextLabelArea", "Offiziere", 1, 1, 1, 2);
-    text("infoSingleOfficerTextInformationArea", std::to_string(sh.officers), 1, 1, 1);
+    text("infoSingleOfficerTextLabelArea", "Offiziere", co[0], co[1], co[2], 2);
+    text("infoSingleOfficerTextInformationArea", std::to_string(sh.officers), co[0], co[1], co[2]);
     float r, g, bl;
     if (R("infoSingleCrewDotArea", a)) { StateRgb(sh.crew_state, &r, &g, &bl); b.SpriteBar("crew_dot", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, r, g, bl); }
     if (R("infoSingleShieldBarArea", a)) { StateRgb(sh.shield, &r, &g, &bl); b.SpriteBar("large_shield_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.shield, r, g, bl); }
-    if (R("infoSingleEnergyBarArea", a)) {
+    if (sh.construction >= 0 && R("infoSingleConstructionBarArea", a)) {
+      b.SpriteBar("large_construction_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.construction, 1.0f, 0.6f, 0.2f);
+    } else if (R("infoSingleEnergyBarArea", a)) {
       if (sh.energy >= 0) b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.energy, 1, 1, 0);
       else b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, 0.3f, 0.3f, 0.3f);
     }
@@ -492,7 +510,8 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
       if (c.Rect(n + "IconArea", ia)) b.Sprite(c.Str(n + "Icon"), x + ia[0] * st, ia[1] * st, ia[2] * st, ia[3] * st);
       if (c.Rect(n + "TextArea", ta)) {
         const float th = ta[3] * st * 0.85f;
-        b.Text(vals[i], x + ta[0] * st, ta[1] * st + 0.5f * (ta[3] * st - th), th, 1.0f, 0.8f, 0.2f);
+        const std::string v = state.res[i] >= 0 ? std::to_string(state.res[i]) : std::string(vals[i]);
+        b.Text(v.c_str(), x + ta[0] * st, ta[1] * st + 0.5f * (ta[3] * st - th), th, 1.0f, 0.8f, 0.2f);
       }
     }
   }
@@ -578,7 +597,7 @@ HudLayout BuildHudLayout(const HudData& data, int width, int height, const HudSt
         UiRect rr = {bx, spd_y + ba[1] * s, ba[2] * s, ba[3] * s};
         if (static_cast<size_t>(i) < state.rail.size() && state.rail[static_cast<size_t>(i)].action != UiAction::None) {
           const HudCmd& cm = state.rail[static_cast<size_t>(i)];
-          b.Button(cm.action, cm.sprite, cm.label, rr, cm.active, cm.enabled);
+          b.Button(cm.action, cm.sprite, cm.label, rr, cm.active, cm.enabled, cm.progress);
         }
       }
     }

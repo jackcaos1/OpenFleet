@@ -63,6 +63,7 @@ struct BuildOptions {
   bool show_oq = false;
   bool show_borg = false;
   bool show_damage = false;
+  bool show_ore = false;  // Bergbaustation: Knoten unter "oreglow" (Strahlenkranz) nur sichtbar, solange ein Frachter angedockt ist (0x45a7d0)
 };
 
 struct ModelVariant {

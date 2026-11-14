@@ -40,6 +40,7 @@ class SpriteRenderer {
     bool flat = false;  // true: Rechteck in der right/up-Ebene des Knotens (statt zur Kamera gedreht)
     float right[3] = {1, 0, 0}, up[3] = {0, 1, 0};
     GLuint texture = 0;
+    float lift = 0;  // Verschiebung zur Kamera hin (Modelleinheiten); Mondleuchten sonst in der Kugel verborgen
     const SprAnimation* anim = nullptr;
   };
   GLuint LoadTexture(const std::string& name, FileSource& src);

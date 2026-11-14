@@ -46,7 +46,7 @@ int MaxLod(const Sod& sod) {
 }
 
 struct Flags {
-  bool oq = false, borg = false, damage = false;
+  bool oq = false, borg = false, damage = false, ore = false;
   int lod = -1;
 };
 
@@ -59,6 +59,7 @@ Flags AncestorFlags(const Sod& sod, const std::unordered_map<std::string, size_t
     if (lower == "oq") f.oq = true;
     if (StartsWith(lower, "borg")) f.borg = true;
     if (StartsWith(lower, "damage")) f.damage = true;
+    if (lower == "oreglow" && cur != i) f.ore = true;  // Nachfahren (der Mond hat einen gleichnamigen Sprite-Knoten, der sichtbar bleibt)
     const int lod = LodLevel(lower);
     if (lod >= 0) f.lod = lod;
     auto it = by_name.find(sod.nodes[cur].parent);
@@ -85,6 +86,7 @@ std::vector<char> VisibleNodes(const Sod& sod, const BuildOptions& o) {
     bool show = true;
     if (f.lod >= 0 && f.lod != lod) show = false;
     if (f.oq && !o.show_oq) show = false;
+    if (f.ore && !o.show_ore) show = false;
     if (f.borg && !o.show_borg) show = false;
     if (f.damage && !f.borg && !o.show_damage) show = false;
     if (f.damage && f.borg && !o.show_borg) show = false;
@@ -110,10 +112,13 @@ void BuildModel(const Sod& sod, const std::string& name, Model* out, BuildOption
     const SodNode& nd = sod.nodes[ni];
     if (nd.type != kNodeNull || nd.name.size() < 3) continue;
     const std::string l = [&] { std::string r = nd.name; for (char& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return r; }();
-    if (l[0] != 'h' || l[1] != 'p') continue;
-    bool digits = true;
-    for (size_t i = 2; i < l.size(); ++i) digits = digits && std::isdigit(static_cast<unsigned char>(l[i]));
-    if (!digits) continue;
+    const bool named = l == "build" || l == "dock";  // Hardpoints der Werften (buildHardpoint) und Bergbaustationen (dockingHardpoint)
+    if (!named) {
+      if (l[0] != 'h' || l[1] != 'p') continue;
+      bool digits = true;
+      for (size_t i = 2; i < l.size(); ++i) digits = digits && std::isdigit(static_cast<unsigned char>(l[i]));
+      if (!digits) continue;
+    }
     ModelHardpoint hp;
     hp.name = l;
     for (int k = 0; k < 3; ++k) {

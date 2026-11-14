@@ -24,7 +24,7 @@ class MarkerRenderer {
   void Set(const std::vector<Marker>& markers, float line_length);
   void Clear() { point_count_ = 0; }
   int count() const { return point_count_; }
-  void Draw(const Mat4& mvp, float point_size_px) const;
+  void Draw(const Mat4& mvp, float point_size_px, bool depth_test = false) const;
 
  private:
   GLuint program_ = 0, vao_ = 0, vbo_ = 0;

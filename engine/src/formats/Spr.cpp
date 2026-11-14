@@ -75,7 +75,10 @@ void SprLibrary::AddText(const std::string& text) {
   SprAnimation* cur = nullptr;
   bool in_keys = false, want_header = false, anim_ctx = false;
   while (std::getline(in, line)) {
-    const auto w = Words(line);
+    auto w = Words(line);
+    // Trailing "#comment" columns (race files add qualifier/screen columns) are not data.
+    for (size_t k = 1; k < w.size(); ++k)
+      if (w[k][0] == '#') { w.resize(k); break; }
     if (w.empty() || w[0][0] == '#') {
       if (w.empty() && !in_keys) {}  // Leerzeile beendet Keyframes nicht zwingend
       continue;

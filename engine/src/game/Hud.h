@@ -30,6 +30,7 @@ struct HudCmd {
   UiAction action = UiAction::None;
   std::string sprite, label;
   bool active = false, enabled = true;
+  float progress = -1.0f;  // >= 0: Fortschrittsbalken auf der Taste (Bau)
 };
 
 // Ausgewaehltes Objekt fuer das Schiffsfeld (Werte 0..1; -1 = Anzeige ausgegraut).
@@ -42,6 +43,8 @@ struct HudShip {
   float system[5] = {1, 1, 1, 1, 1};  // Schilde, Antrieb, Lebenserhaltung, Sensoren, Waffen
   float crew_state = 1;               // 1 gruen, 0,5 gelb, 0 rot
   float hull = 1;                     // Huelle 0..1 (faerbt das Drahtgitter)
+  float construction = -1;            // >= 0: Baufortschritt, ersetzt die Energieanzeige (infoSingleConstructionBar)
+  float dilithium = -1;               // >= 0: Dilithiummond, Vorrat 0..1 (infoSingleDilithiumBar); nur Name, Drahtgitter und Balken
 };
 
 struct HudState {
@@ -55,6 +58,7 @@ struct HudState {
   float view_quad[8] = {0};
   std::vector<HudDot> dots;           // Punkte der Minikarte
   std::string race_label;             // Beschriftung der Rassen-Taste
+  int res[3] = {-1, -1, -1};          // Dilithium, Besatzung, Offiziere des eigenen Teams (-1: Platzhalter)
 };
 
 // Ein gezeichnetes Rechteck in Bildschirmpixeln (Ursprung oben links). tex leer = einfarbige Flaeche (rgba).

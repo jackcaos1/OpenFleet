@@ -71,6 +71,14 @@ bool LoadUnitDef(OdfLibrary& lib, const std::string& name, UnitDef* out, std::st
   o->GetInt("officerCost", &out->officer_cost);
   o->GetInt("crewCost", &out->crew_cost);
   o->GetInt("dilithiumCost", &out->dilithium_cost);
+  o->GetInt("officerGain", &out->officer_gain);
+  o->GetFloat("dilithiumTransferRate", &out->dilithium_transfer_rate);
+  o->GetFloat("maxScrap", &out->max_scrap);
+  o->GetFloat("dockingBuffer", &out->docking_buffer);
+  for (int i = 0; i < 12; ++i) {
+    std::string v;
+    if (o->GetString("buildItem" + std::to_string(i), &v) && !v.empty()) out->build_items.push_back(ToLowerAscii(v));
+  }
   o->GetFloat("maxHealth", &out->max_health);
   o->GetFloat("shieldRate", &out->shield_rate);
   o->GetFloat("shieldDelay", &out->shield_delay);
@@ -126,6 +134,8 @@ bool LoadRaceDef(OdfLibrary& lib, const std::string& race, RaceDef* out) {
   o->GetFloat("weaponYellow", &out->weapon_yellow);
   o->GetFloat("weaponRed", &out->weapon_red);
   o->GetFloat("boardingStrength", &out->boarding_strength);
+  o->GetFloat("crewAccumulationRate", &out->crew_accumulation_rate);
+  o->GetFloat("planetCrewAccumulationModifier", &out->planet_crew_modifier);
   const struct { const char* key; std::vector<std::string>* list; } kLists[3] = {
       {"minimalUnits", &out->minimal_units}, {"standardUnits", &out->standard_units}, {"superUnits", &out->super_units}};
   for (const auto& l : kLists)

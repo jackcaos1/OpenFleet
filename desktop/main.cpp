@@ -62,6 +62,10 @@ class DesktopHost : public fleet::GameHost {
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::string autostart;  // Entwicklungshilfe: Skirmish ohne Eingabe starten und simulieren (feste Schrittweite 0,05 s)
+  double sim_seconds = 0;
+  bool ai_vs_ai = false;
+  std::string human_build;  // "<odf>:<index>"
   int max_frames = -1;
   std::string screenshot;
   std::string data_dir;
@@ -73,6 +77,14 @@ int main(int argc, char** argv) {
       max_frames = std::atoi(argv[++i]);
     } else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) {
       screenshot = argv[++i];
+    } else if (!std::strcmp(argv[i], "--autostart") && i + 1 < argc) {
+      autostart = argv[++i];
+    } else if (!std::strcmp(argv[i], "--sim-seconds") && i + 1 < argc) {
+      sim_seconds = std::atof(argv[++i]);
+    } else if (!std::strcmp(argv[i], "--human-build") && i + 1 < argc) {
+      human_build = argv[++i];
+    } else if (!std::strcmp(argv[i], "--ai-vs-ai")) {
+      ai_vs_ai = true;
     } else if (!std::strcmp(argv[i], "--data") && i + 1 < argc) {
       data_dir = argv[++i];
     } else if (!std::strcmp(argv[i], "--model") && i + 1 < argc) {
@@ -140,7 +152,25 @@ int main(int argc, char** argv) {
       game.OnResize(width, height);
       bool running = true;
       Uint64 last = SDL_GetPerformanceCounter();
+      double sim_t = 0, next_report = 0;
+      if (!autostart.empty()) {
+        for (int k = 0; k < 3; ++k) game.OnFrame(0.01);  // Daten uebernehmen (ApplyPending)
+        if (!game.DebugStartSkirmish(autostart, ai_vs_ai)) { FLEET_LOGE("Autostart: Karte %s nicht gestartet", autostart.c_str()); running = false; exit_code = 1; }
+      }
       while (running) {
+        if (!autostart.empty()) {
+          game.OnFrame(0.05);
+          sim_t += 0.05;
+          if (!human_build.empty() && sim_t >= 1.0) {
+            const size_t c = human_build.find(':');
+            std::fprintf(stderr, "human build: %s\n", game.DebugHumanBuild(human_build.substr(0, c), c == std::string::npos ? 0 : std::atoi(human_build.c_str() + c + 1)).c_str());
+            human_build.clear();
+          }
+          if (sim_t >= next_report) { std::fprintf(stderr, "--- t=%.0f s\n%s", sim_t, game.DebugReport().c_str()); next_report += 30.0; }
+          if (sim_t >= sim_seconds) running = false;
+          SDL_GL_SwapWindow(window);
+          continue;
+        }
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
           if (e.type == SDL_QUIT) running = false;

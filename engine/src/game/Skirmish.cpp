@@ -23,7 +23,7 @@ const std::vector<SkOptDef>& SkOptDefs() {
       {kOptDirectors, 524, 372, 111, 20, true, {"directors_on", "directors_off"}},
       {kOptHideMinimap, 385, 295, 128, 20, true, {"hide_minimap_on", "hide_minimap_off"}},
       {kOptFixedPlacement, 385, 318, 128, 20, true, {"fixed_placement_on", "fixed_placement_off"}},
-      {kOptVisibility, 385, 341, 128, 20, false, {"show_all", "show_available", "show_allies", "show_none"}},
+      {kOptVisibility, 385, 341, 128, 20, false, {"show_all", "show_none"}},
       {kOptShroudFog, 385, 364, 128, 20, false, {"shroud_fog_on_on", "shroud_fog_off_on", "shroud_fog_on_off", "shroud_fog_off_off"}},
   };
   return k;
@@ -35,11 +35,11 @@ SkirmishSettings::SkirmishSettings() {
   // fallen beim Gastgeber auf den ersten Eintrag; Offiziere 100 = erster Eintrag. Die uebrigen Vorgaben folgen den Byte-Feldern +0x4c..+0x57 und den Zahlen
   // +0x68..+0x84 (Zuordnung zu den Schaltern aus dem Aufbaucode). Schalterzustand 0 zeigt den zuerst registrierten Text, Zustand 1 den zweiten (0x525330). Feste Platzierung: Zustand 0
   // (0x539dbb). "Maximale Spieler" wird mit der Karte gesetzt (Index 8 - Spielerzahl, 0x539e44); Sichtbarkeit: Vorgabe +0x74 = 3.
-  v[kOptUnits] = 1;
+  v[kOptUnits] = 2;  // Konstruktor 0x4bd200: Wert 1 = "Standard Units" (Auswahlindex 2; die Auswahl bildet 0 Minimal, 1 Standard, 2 Super, 3 Karteneinheiten ab, 0x53b5e8)
   v[kOptFerengi] = 1;
   v[kOptHideMinimap] = 1;  // +0x53 = 1 -> Zustand 1 = zweiter Text (hide_minimap_off, "Minimap Hidden"; Zustand 0 = erster registrierter Text, 0x525330)
   v[kOptGameType] = -1;  // Vorgabe +0x78 = 2 (ladder) ist nicht in der Liste: das Feld bleibt leer (0x539e01)
-  v[kOptVisibility] = 3;
+  v[kOptVisibility] = 0;  // im Original geprueft (Nutzer): Vorgabe "show all", die Liste enthaelt nur show all und show none
 }
 
 std::string SkOptText(const LabelMap& labels, const SkirmishSettings& s, SkOpt opt) {

@@ -4891,30 +4891,84 @@ void Game::OnFrame(double dt) {
         const float* c = kMapTeamColors[rig.team >= 0 && rig.team < 9 ? rig.team : 0];
         sm.r->SetTeamColor(c[0], c[1], c[2]);
         sm.r->Draw(proj * view * m, rot * r, &m);
-        std::string bee_odf;
-        if (const OdfObject* od = s.odf_lib ? s.odf_lib->Get(rig.odf_l) : nullptr) od->GetString("workerBeeName", &bee_odf);
-        const std::string bee_sod = bee_odf.empty() ? std::string() : s.SodOfOdf(ToLowerAscii(bee_odf));
-        const float ring = std::max(40.0f, 0.55f * fp);
-        beam_len = ring;
-        const int nb = 6;  // numberOfWorkerBees (const.odf)
-        for (int i = 0; i < nb; ++i) {
-          const float a = static_cast<float>(s.clock) * 0.8f + static_cast<float>(i) * 6.2831853f / static_cast<float>(nb);
-          const float bx = rig.site[0] + std::cos(a) * ring, bz = rig.site[2] + std::sin(a) * ring, by = 6.0f + 4.0f * std::sin(static_cast<float>(s.clock) * 2.0f + static_cast<float>(i));
+        // Arbeiter (WorkerBee, Armada.exe 0x518250 mit Zustaenden 0..7; Parameter aus der ODF des Bauschiffs, ConstructionRigClass 0x454b70):
+        // numberOfWorkerBees, workerBeeName (Standard fbee), workerBeeHardpoints (Heimatpunkte bot1..), weldingBeamWidth, timeUntilTakeoff, timeWelding,
+        // timeUntilClosure, weldingRadius. ANNAHME: Flugbahnen (im Original Kurven, 0x58c9d0), Schweisspunkte (0x50d2f0) und Fluggeschwindigkeit sind nicht gelesen;
+        // hier: Start nach timeUntilTakeoff vom Heimatpunkt, danach Flug zu Zufallspunkten auf dem wachsenden Bauwerk, je timeWelding Sekunden schweissen,
+        // in den letzten timeUntilClosure Sekunden zurueck zum Heimatpunkt.
+        std::string bee_odf = "fbee";
+        int nb = 6;
+        float takeoff = 2.0f, weld_t = 0.5f, closure = 2.0f, beam_w = 1.0f, spark = 0.5f;
+        std::vector<std::string> homes;
+        if (const OdfObject* od = s.odf_lib ? s.odf_lib->Get(rig.odf_l) : nullptr) {
+          od->GetString("workerBeeName", &bee_odf);
+          od->GetInt("numberOfWorkerBees", &nb);
+          od->GetFloat("timeUntilTakeoff", &takeoff);
+          od->GetFloat("timeWelding", &weld_t);
+          od->GetFloat("timeUntilClosure", &closure);
+          od->GetFloat("weldingBeamWidth", &beam_w);
+          od->GetFloat("weldingRadius", &spark);
+          homes = od->GetStrings("workerBeeHardpoints");
+        }
+        const std::string bee_sod = s.SodOfOdf(ToLowerAscii(bee_odf));
+        const float total = std::max(0.1f, rig.bq.total);
+        const float elapsed = prog * total;
+        const float fp_r = std::max(30.0f, 0.5f * fp) * grow;
+        const float bee_speed = 90.0f;
+        auto hash = [](unsigned a, unsigned b, unsigned c) {
+          unsigned h = a * 2654435761u ^ (b + 0x9e3779b9u) * 40503u ^ (c + 1u) * 2246822519u;
+          h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+          return static_cast<float>(h & 0xffffu) / 65535.0f;
+        };
+        for (int i = 0; i < nb && i < 12; ++i) {
+          float home[3] = {rig.st.pos[0], rig.st.pos[1], rig.st.pos[2]}, hd[3];
+          if (static_cast<size_t>(i) < homes.size()) s.HardpointWorld(rig, ToLowerAscii(homes[static_cast<size_t>(i)]), home, hd);
+          float pos[3] = {home[0], home[1], home[2]};
+          bool welding = false;
+          float tgt[3] = {0, 0, 0};
+          if (elapsed >= takeoff && elapsed < total - closure) {
+            const float cyc_start = takeoff;
+            float tt = elapsed - cyc_start, from[3] = {home[0], home[1], home[2]};
+            for (unsigned k = 0; k < 4000; ++k) {
+              const float a = hash(rig.id, static_cast<unsigned>(i), k * 3) * 6.2831853f;
+              const float rr = fp_r * (0.3f + 0.7f * hash(rig.id, static_cast<unsigned>(i), k * 3 + 1));
+              const float to[3] = {rig.site[0] + std::cos(a) * rr, 2.0f + fp_r * 0.6f * hash(rig.id, static_cast<unsigned>(i), k * 3 + 2), rig.site[2] + std::sin(a) * rr};
+              const float dist = std::sqrt((to[0] - from[0]) * (to[0] - from[0]) + (to[1] - from[1]) * (to[1] - from[1]) + (to[2] - from[2]) * (to[2] - from[2]));
+              const float fly = dist / bee_speed;
+              if (tt < fly) {
+                const float u = tt / std::max(1e-3f, fly);
+                for (int c = 0; c < 3; ++c) pos[c] = from[c] + (to[c] - from[c]) * u;
+                pos[1] += 8.0f * std::sin(u * 3.14159265f);
+                break;
+              }
+              tt -= fly;
+              if (tt < weld_t) { for (int c = 0; c < 3; ++c) { pos[c] = to[c]; tgt[c] = to[c]; } welding = true; break; }
+              tt -= weld_t;
+              for (int c = 0; c < 3; ++c) from[c] = to[c];
+            }
+          } else if (elapsed >= total - closure && elapsed < total) {
+            const float u = (elapsed - (total - closure)) / std::max(1e-3f, closure);
+            const float from[3] = {rig.site[0], 8.0f, rig.site[2]};
+            for (int c = 0; c < 3; ++c) pos[c] = from[c] + (home[c] - from[c]) * u;
+          }
           if (!bee_sod.empty() && s.EnsureSpawnModel(bee_sod)) {
             ShipState bs;
-            bs.pos[0] = bx; bs.pos[1] = by; bs.pos[2] = bz;
-            bs.yaw = a + 1.5708f;
+            for (int c = 0; c < 3; ++c) bs.pos[c] = pos[c];
+            bs.yaw = rig.st.yaw;
             Mat4 bm, br;
-            ShipMatrices(bs, 3.0f, &bm, &br);
+            ShipMatrices(bs, rig.scale, &bm, &br);
             const Impl::SpawnModel& bsm = s.spawn_models[bee_sod];
             bsm.r->SetTeamColor(c[0], c[1], c[2]);
             bsm.r->Draw(proj * view * bm, rot * br, &bm);
           }
-          MarkerRenderer::Marker mk;
-          mk.pos[0] = bx; mk.pos[1] = by; mk.pos[2] = bz;
-          mk.dir[0] = -std::cos(a); mk.dir[1] = 0.0f; mk.dir[2] = -std::sin(a);
-          mk.color[0] = 1.0f; mk.color[1] = 0.8f; mk.color[2] = 0.3f;
-          beams.push_back(mk);
+          if (welding) {  // Schweissstrahl: von Arbeiter zum Punkt (kurz), Funke am Punkt (weldingRadius)
+            MarkerRenderer::Marker mk;
+            for (int c = 0; c < 3; ++c) mk.pos[c] = tgt[c];
+            mk.dir[0] = 0; mk.dir[1] = 1; mk.dir[2] = 0;
+            mk.color[0] = 1.0f; mk.color[1] = 0.85f; mk.color[2] = 0.4f;
+            beams.push_back(mk);
+            beam_len = std::max(beam_len, 3.0f * spark + beam_w);
+          }
         }
       }
       if (!beams.empty()) {

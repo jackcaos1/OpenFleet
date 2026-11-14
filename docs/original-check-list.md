@@ -74,3 +74,10 @@ Verified in the code, **not yet compared with the running original**:
 - Search and destroy: random flight across the whole map; do ships only attack what comes into weapon range? Is the button really HUNT?
 - Patrol: **assumption** (back and forth between start and tapped point). What does the original do (several points? loops?).
 - Which ships may use these orders (all movable classes? armed only?).
+
+### Build 107: special weapons and construction animation
+- Regeneration: shield rises by regenModifier per second, energy drops by the cost per second, stops when the shield is full? Does the repair rate of systems rise as well (ODF text)?
+- Cloak: one-time energy cost, fade time 3 s; can enemies still target a ship during the fade? What happens within `unsafeCloakDistance` (400)?
+- Self destruct: 5 s countdown, second press cancels; does the explosion damage ships within 300?
+- Energy: start value (full?) and recharge (`specialEnergyRate` per second?).
+- Construction rig: do the six bees start from the bays bot1..bot6 after 2 s, weld 0.5 s per point and return in the last 2 s? How do they fly (curves)? Does the structure appear progressively by triangles?

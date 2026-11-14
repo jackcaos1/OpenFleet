@@ -65,7 +65,17 @@ Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew
   (`numberOfWorkerBees`, 6 in const.odf). Bee i starts at the hardpoint named by entry i of the class's name list (+0x55c, helper 0x457f70; falls back to the root node).
   Each bee gets a 0xb8-byte record built by 0x519010 and registered with 0x5194a0 (manager 0x67f6c0). The per-frame bee behaviour is 0x518250 (about 860 lines, not read).
 - The placeholder object (`mconstph.odf`, class `constPlaceholder`, `is_starbase`, footprint) is created at the build hardpoint transform; `BuildingEffect` manager (global 0x67f4a8, update 0x50c950 / 0x50caa0) draws the growing structure; both not read.
-- Client build 95/96 shows an invented version (growing model, six orbiting bees, beams). A faithful port needs its own session.
+- Client build 95/96 showed an invented version (growing model, six orbiting bees, beams). A faithful port needs its own session.
+- **Verified parameters (class constructor 0x454b70):** `numberOfWorkerBees` (+0x550), `workerBeeName` (+0x554, default `fbee`), `workerBeeHardpoints` (+0x558, `bot1`..`bot6` exist in the rig models),
+  `weldingBeamSprite` (+0x568, default `phaser`, the ODFs say `weldbeam`), `weldingBeamWidth` (+0x56c), `timeUntilTakeoff` (+0x570, 2.0 s), `timeUntilClosure` (+0x574, 2.0 s: delay before the bee
+  disappears once the bay doors begin to close), `timeWelding` (+0x578, 0.5 s per point); `weldingRadius` (spark size, 0x46a470).
+- **Bee state machine (0x518250, partly read):** per bee a record with the state in +0x3c (0..7), a timer in +0x40, the owner (the rig) handle in +0x7c, a flight curve (object +0x6c, parameter +0x70, evaluated by 0x58c9d0 / 0x58c930)
+  and a weld target (+0x5c, chosen by 0x50d2f0 from the placeholder). The states switch on distance thresholds (squared compare with 0x5d2af8) and on the timer; state 4 waits `timeWelding`,
+  state 7 waits `timeUntilClosure` and then the bee is removed (0x5195c0). The curve geometry and the target choice are **not read**.
+- **BuildingEffect (0x50c950 update / 0x50caa0 draw, create 0x50cce0):** an effect record per construction with a duration (+0x1c) and time left (+0x20); the update counts the time down and
+  derives a count (time fraction x +0xd0) that the draw routine hands to the placeholder mesh (0x58ce40), i.e. the structure appears progressively. Sub-effects (sparks) are updated in a list (+0x108).
+  The exact reveal order is **not read**.
+- **Client since build 107:** bees use the real parameters above (count, model, home hardpoints, timings) with **assumed** flight paths (random weld points on the growing structure, 90 m/s).
 
 ## Free freighter with a mining station (verified, Armada.exe 0x457e40 / 0x45a830)
 - At the end of a construction (0x457e40, after the completion routine 0x45cdf0 created the building) the code tests the class flag `0x200000` of the new object (set in the `MiningStation` constructor at 0x45a3fd)

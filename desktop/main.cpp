@@ -103,6 +103,8 @@ int main(int argc, char** argv) {
   }
 
   fleet::SetLogSink(SdlLogSink);
+  // Test runs (autostart, screenshots, frame limit) are silent: the dummy audio driver plays nothing. FLEET_AUDIO=1 keeps the real device.
+  if ((!autostart.empty() || !screenshot.empty() || max_frames > 0) && !std::getenv("FLEET_AUDIO")) SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
     FLEET_LOGE("SDL_Init: %s", SDL_GetError());
     return 1;

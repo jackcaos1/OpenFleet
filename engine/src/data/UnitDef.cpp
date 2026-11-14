@@ -75,6 +75,7 @@ bool LoadUnitDef(OdfLibrary& lib, const std::string& name, UnitDef* out, std::st
   o->GetFloat("dilithiumTransferRate", &out->dilithium_transfer_rate);
   o->GetFloat("maxScrap", &out->max_scrap);
   o->GetFloat("dockingBuffer", &out->docking_buffer);
+  { bool rf = true; if (o->GetBool("repairFacility", &rf)) out->repair_facility = rf; }  // yard class key (0x456cd0), default 1
   o->GetFloat("recrewRate", &out->recrew_rate);  // yard class key (0x4561c0), default 10
   for (int i = 0; i < 12; ++i) {
     std::string v;

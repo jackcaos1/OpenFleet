@@ -88,3 +88,4 @@ Verified in the code (docs/formats/orders.md), not yet compared with the running
 - Rally point: a new yard ship drives 3 x radius in front of the yard (default) and stops there? After "rally point" + tap on the map, do new ships go to that point? Is the point shown on the map (flag)?
 - Does the rally point also apply to the construction ship (it is built at a yard)?
 - Repair: what does the button do in the original, which objects, which rate? (not implemented)
+- Repair order (build 108): which objects count as a repair bay (only shipyards? starbases too?), what exactly happens in the bay (hull? crew? how fast?), does the ship leave to the rally point afterwards, does the queue order ships by arrival?

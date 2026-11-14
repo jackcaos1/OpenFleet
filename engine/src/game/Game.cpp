@@ -392,7 +392,10 @@ struct Game::Impl {
     bool mining_stn = false;                // classLabel "mining"
     float transfer_rate = 0, dock_buffer = 0;
     // Befehle (CraftProcess-Auftragstypen, docs/formats/orders.md): Wache 26, Erkunden 27, Patrouille 29, Suchen und Zerstoeren (HUNT) 25
-    enum Ord { kOrdNone = 0, kOrdGuard, kOrdPatrol, kOrdScout, kOrdHunt };
+    enum Ord { kOrdNone = 0, kOrdGuard, kOrdPatrol, kOrdScout, kOrdHunt, kOrdRepair };
+    int rp_state = 0;                       // repair order: docking state (3 approach, 5 spline, 6 slide, 7 at the head of the repair queue)
+    bool repair_fac = false;                // yard class with repairFacility (0x45ecd0)
+    float rp_t = 0;                         // time at the head of the queue
     SpecialEnergy energy;                   // maxSpecialEnergy / specialEnergyRate (Spezialwaffen)
     std::vector<SpecialRt> sprt;            // Zustand der Spezialwaffen, parallel zu specials
     float cloak = 0;                        // 0..1, 1 = getarnt
@@ -1527,6 +1530,8 @@ struct Game::Impl {
     s->mining_stn = u.class_label == "mining";
     s->transfer_rate = u.dilithium_transfer_rate;
     s->dock_buffer = u.docking_buffer;
+    s->repair_fac = (u.class_label == "shipyard" || u.class_label == "starbase") && u.repair_facility;
+    if (s->dock_buffer <= 0 && s->repair_fac) s->dock_buffer = 90.0f;  // yard class default of dockingBuffer (0x456ca8)
     s->cargo_max = u.max_scrap;
     for (const WeaponSlot& ws : u.weapons) {
       std::string wo = ToLowerAscii(ws.odf);
@@ -2010,11 +2015,29 @@ struct Game::Impl {
     }
   }
   void ClearOrder(Spawned& s) {
+    if (s.order == Spawned::kOrdRepair) LeaveRepairQueue(s);
     s.order = Spawned::kOrdNone;
     s.ord_target = 0;
   }
+  // A craft that gives up its repair order leaves every queue it stands in (the queue length shrinks by 2 radii, as when a craft is destroyed in the queue, 0x558240).
+  void LeaveRepairQueue(Spawned& f) {
+    if (f.dock_phase > 0) {
+      for (Spawned& y : spawned) {
+        const auto it = std::find(y.dq.begin(), y.dq.end(), f.id);
+        if (it == y.dq.end()) continue;
+        y.dq.erase(it);
+        y.dq_len = std::max(0.0f, y.dq_len - 2.0f * RadiusOf(f));
+        if (y.docked_id == f.id) y.docked_id = 0;
+      }
+      f.dock_phase = 0;
+      f.hv.ok = false;
+    }
+    f.rp_state = 0;
+    f.rp_t = 0;
+  }
   void StepOrder(size_t i, float dt) {
     Spawned& s = spawned[i];
+    if (s.order == Spawned::kOrdRepair) return;  // StepRepairs drives it every frame
     s.ord_think -= dt;
     if (s.ord_think > 0) return;
     s.ord_think = 0.25f;
@@ -3379,6 +3402,159 @@ struct Game::Impl {
   // Frachter-Ablauf (ANNAHME, Armada.exe 0x458xxx nicht gelesen): zur naechsten eigenen Bergbaustation, zum naechsten Mond davon, mit dem Bergbaustrahl
   // (gminebm: Schussabstand 1,5 s, Reichweite 120, minebm damageBase 15) die Ladung (maxScrap 150) fuellen, zurueck und mit der Rate der Station
   // (dilithiumTransferRate) entladen; Entladen nach der echten Station-Routine 0x45a910 (Menge = min(Ladung, Rate * dt), nur solange der Vorrat unter dem Hoechstwert liegt).
+  // Docking at a queue manager (MiningQueueManager / RepairQueueManager share the update 0x558240). Handles the states 3 (approach), 5 (spline), 6 (slide forward);
+  // state 7 (at the head) is left to the caller. Returns true when this frame was used.
+  bool StepDocking(Spawned& f, int& fstate, Spawned& stw, const float hp_pos[3], const float hp_dir[3], float dt) {
+    auto go = [&](const float t[3]) {  // set the target when it changed (has_target stays set after arrival)
+      if (!CanFly(f)) return;
+      const float dx = f.st.target[0] - t[0], dz = f.st.target[2] - t[2];
+      if (!f.st.has_target || std::sqrt(dx * dx + dz * dz) > 30.0f) { f.auto_move = 0; SetShipTarget(&f.st, t); }
+    };
+        // Andocken wie im Original (MiningQueueManager, Armada.exe 0x558240; Details docs/formats/economy.md): Warteschlange auf der Achse des Dock-Hardpoints,
+        // Hermite-Kurve zum Ende der Schlange, Vorrutschen entlang der Front, Entladen am Kopf, danach Ausfahrt ueber die Ausgabe-Warteschlange.
+        const float dl_ = std::sqrt(hp_dir[0] * hp_dir[0] + hp_dir[1] * hp_dir[1] + hp_dir[2] * hp_dir[2]);
+        float D[3] = {hp_dir[0] / std::max(1e-4f, dl_), hp_dir[1] / std::max(1e-4f, dl_), hp_dir[2] / std::max(1e-4f, dl_)};
+        float B[3], tail[3];
+        for (int k = 0; k < 3; ++k) B[k] = hp_pos[k] - D[k] * stw.dock_buffer;           // Basis: dockingBuffer hinter dem Dock
+        auto tail_of = [&](float len, float out[3]) { for (int k = 0; k < 3; ++k) out[k] = B[k] - D[k] * len; };
+        tail_of(stw.dq_len, tail);
+        const float r2 = 2.0f * RadiusOf(f);
+        if (fstate == 3) {  // Anflug auf den Wartepunkt (Schlangenende minus 40, 0x556d30); naeher als tooCloseToTurn: einreihen (Schlange +2 Radius, Befehl 8, Phase 1)
+          float Q[3];
+          for (int k = 0; k < 3; ++k) Q[k] = tail[k] - D[k] * 40.0f;
+          const float dx = f.st.pos[0] - Q[0], dz = f.st.pos[2] - Q[2];
+          if (std::sqrt(dx * dx + dz * dz) < (f.hodf_ok ? f.hodf.tooCloseToTurn : 50.0f)) {
+            stw.dq.push_back(f.id);
+            stw.dq_len += r2;
+            float E[3];
+            tail_of(stw.dq_len, E);
+            const float d3 = Dist3(E, f.st.pos), k = 0.4f * d3;   // Konstante 0x5d21f8 = 0,4
+            float fwd[3];
+            ShipForward(f.st, fwd);
+            for (int c = 0; c < 3; ++c) { f.sp_p0[c] = f.st.pos[c]; f.sp_p1[c] = E[c]; f.sp_t0[c] = fwd[c] * k; f.sp_t1[c] = D[c] * k; }
+            f.sp_t = 0;
+            f.dock_phase = 1;
+            fstate = 5;
+            f.st.has_target = false;
+            f.st.speed = 0;
+          } else {
+            go(Q);
+          }
+          return true;
+        }
+        const float speed = (f.hodf_ok ? f.hodf.impulseSpeed : 20.0f) * f.dock_factor;
+        auto move_front = [&]() {
+          float fwd[3];
+          ShipForward(f.st, fwd);
+          for (int k = 0; k < 3; ++k) f.st.pos[k] += fwd[k] * speed * dt;   // 0x465b50
+        };
+        if (fstate == 5) {  // Phase 1: Hermite-Kurve (0x556650): Parameter waechst mit Geschwindigkeit dockingSpeedFactor x Impulsgeschwindigkeit
+          const float t = f.sp_t;
+          // Kurve in Potenzform (0x5569a0): c0 = P0, c1 = T0, c2 = 3 (P1 - P0) - 2 T0 - T1, c3 = 2 (P0 - P1) + T0 + T1; P' = 3 c3 t^2 + 2 c2 t + c1 (0x558990), P'' = 6 c3 t + 2 c2 (0x558a30)
+          float c2[3], c3[3], d1[3], d2[3];
+          for (int c = 0; c < 3; ++c) {
+            c2[c] = 3 * (f.sp_p1[c] - f.sp_p0[c]) - 2 * f.sp_t0[c] - f.sp_t1[c];
+            c3[c] = 2 * (f.sp_p0[c] - f.sp_p1[c]) + f.sp_t0[c] + f.sp_t1[c];
+            d1[c] = 3 * c3[c] * t * t + 2 * c2[c] * t + f.sp_t0[c];
+            d2[c] = 6 * c3[c] * t + 2 * c2[c];
+          }
+          const float mag = std::max(1e-3f, std::sqrt(d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2]));
+          const float cx = d1[1] * d2[2] - d1[2] * d2[1], cy = d1[2] * d2[0] - d1[0] * d2[2], cz = d1[0] * d2[1] - d1[1] * d2[0];
+          const float kappa = std::sqrt(cx * cx + cy * cy + cz * cz) / (mag * mag * mag);   // Kruemmung |P' x P''| / |P'|^3 (0x558930, 0x4502b0, 0x450210)
+          // Schritt = min(dt x yawRotationRate / (Kruemmung x |P'|), dockingSpeedFactor x Impulsgeschwindigkeit x dt / |P'|) (0x558240, Phase 1)
+          const float step_turn = kappa > 1e-6f ? dt * f.yaw_rate / (kappa * mag) : 1e9f, step_speed = speed * dt / mag;
+          f.sp_t = std::min(1.0f, f.sp_t + std::min(step_turn, step_speed));
+          const float u = f.sp_t;
+          const float g00 = 2 * u * u * u - 3 * u * u + 1, g10 = u * u * u - 2 * u * u + u, g01 = -2 * u * u * u + 3 * u * u, g11 = u * u * u - u * u;
+          for (int c = 0; c < 3; ++c) f.st.pos[c] = g00 * f.sp_p0[c] + g10 * f.sp_t0[c] + g01 * f.sp_p1[c] + g11 * f.sp_t1[c];
+          if (std::fabs(d1[0]) + std::fabs(d1[2]) > 1e-3f) { const float h[3] = {d1[0], 0.0f, d1[2]}; ShipFromForward(h, &f.st); }
+          f.st.speed = speed;
+          if (f.sp_t >= 1.0f) { f.dock_phase = 2; fstate = 6; const float h[3] = {D[0], 0.0f, D[2]}; ShipFromForward(h, &f.st); }
+          return true;
+        }
+        if (fstate == 6) {  // Phase 2: entlang der Front vorrutschen (Kopf: bis zum Dock-Hardpoint, sonst bis 40 + 2 Radien der Voranstehenden hinter die Basis)
+          const bool head = !stw.dq.empty() && stw.dq.front() == f.id;
+          float P[3];
+          if (head) { for (int k = 0; k < 3; ++k) P[k] = hp_pos[k]; }
+          else {
+            float acc = 0;
+            for (unsigned id : stw.dq) { if (id == f.id) break; const int oi = FindById(id); if (oi >= 0) acc += 2.0f * RadiusOf(spawned[static_cast<size_t>(oi)]); }
+            for (int k = 0; k < 3; ++k) P[k] = B[k] - D[k] * (40.0f + acc);
+          }
+          float fwd[3];
+          ShipForward(f.st, fwd);
+          const float dot = (P[0] - f.st.pos[0]) * fwd[0] + (P[1] - f.st.pos[1]) * fwd[1] + (P[2] - f.st.pos[2]) * fwd[2];
+          if (dot > 0) { move_front(); f.st.speed = speed; }
+          else { f.st.speed = 0; if (head) { fstate = 7; f.dock_phase = 3; stw.docked_id = f.id; if (stw.team == human_team) { CinematicRequest cr; cr.value0 = 3.0f; cr.int0 = 3; cr.int1 = 4; cr.object = f.id; PostCinematic(&cinematic_requests, cr); } } }  // 0x45aa50: dockedShip gesetzt (Strahlenkranz an), Kinosicht-Anforderung fuer den lokalen Spieler (0x47aef0, Werte roh)
+          return true;
+        }
+    return false;
+  }
+
+  // Yard choice of the repair order (0x45ecd0, VERIFIED): own yard-class objects with repairFacility that are neither derelict nor disabled; the cheapest by
+  // (surface distance / speed + 5 x ships in its queue, constant 0x5ca6c0 = 5.0). Without a "repair" hardpoint (the starbase models have none) the object is skipped (client choice).
+  int FindRepairYard(const Spawned& f) {
+    int best = -1;
+    float bc = 1e30f;
+    const float speed = std::max(0.1f, f.hodf_ok ? f.hodf.impulseSpeed : 20.0f);
+    for (size_t k = 0; k < spawned.size(); ++k) {
+      const Spawned& y = spawned[k];
+      if (y.team != f.team || !y.repair_fac || y.starbase_cls || y.derelict || y.dying || !y.hp.alive() || y.movable) continue;
+      float hp[3], hd[3];
+      if (!HardpointWorld(y, "repair", hp, hd)) continue;
+      const float d = Dist3(y.st.pos, f.st.pos) - RadiusOf(f) - RadiusOf(y);
+      const float c = d / speed + 5.0f * static_cast<float>(y.dq.size());
+      if (c < bc) { bc = c; best = static_cast<int>(k); }
+    }
+    return best;
+  }
+
+  // Repair order (type 19, handler 0x42a8c0). VERIFIED: the yard choice, the approach and the queue (shared with the freighters), leaving through the yard's output
+  // queue (and then the rally point). ASSUMED: what happens at the head of the queue (crew refilled from the team pool at 10 per second, systems at their normal
+  // repair pace; the craft leaves when both are complete). See docs/formats/orders.md.
+  void StepRepairs(float dt) {
+    for (size_t i = 0; i < spawned.size(); ++i) {
+      Spawned& f = spawned[i];
+      if (f.order != Spawned::kOrdRepair) continue;
+      if (f.dying || !f.hp.alive() || f.derelict || !f.movable) { ClearOrder(f); continue; }
+      int yi = f.ord_target ? FindById(f.ord_target) : -1;
+      float hp_pos[3], hp_dir[3];
+      if (yi >= 0) {
+        const Spawned& y = spawned[static_cast<size_t>(yi)];
+        if (!y.repair_fac || y.derelict || y.dying || !y.hp.alive() || y.team != f.team || !HardpointWorld(y, "repair", hp_pos, hp_dir)) yi = -1;
+      }
+      if (yi < 0) {  // the yard is gone: look for another one (the handler does this every frame)
+        LeaveRepairQueue(f);
+        yi = FindRepairYard(f);
+        if (yi < 0) { f.order = Spawned::kOrdNone; f.ord_target = 0; f.st.has_target = false; continue; }
+        f.ord_target = spawned[static_cast<size_t>(yi)].id;
+        if (!HardpointWorld(spawned[static_cast<size_t>(yi)], "repair", hp_pos, hp_dir)) continue;
+      }
+      Spawned& y = spawned[static_cast<size_t>(yi)];
+      if (f.rp_state == 0) f.rp_state = 3;
+      if (StepDocking(f, f.rp_state, y, hp_pos, hp_dir, dt)) continue;
+      if (f.rp_state != 7) continue;
+      f.rp_t += dt;
+      TeamResources& r = Res(f.team);
+      if (f.hp.crew_max > 0 && f.hp.crew < f.hp.crew_max && r.crew >= 1.0f) {
+        const float take = std::min(std::min(dt * 10.0f, r.crew), f.hp.crew_max - f.hp.crew);
+        SetCrew(&f.hp, f.hp.crew + take);
+        r.crew -= take;
+      }
+      if ((f.hp.crew_max <= 0 || f.hp.crew >= f.hp.crew_max - 0.5f) && !f.hp.damaged()) {
+        y.dq.erase(std::remove(y.dq.begin(), y.dq.end(), f.id), y.dq.end());
+        y.dq_len = std::max(0.0f, y.dq_len - 2.0f * RadiusOf(f));
+        y.docked_id = 0;
+        f.dock_phase = 0;
+        f.rp_state = 0;
+        f.rp_t = 0;
+        f.order = Spawned::kOrdNone;
+        f.ord_target = 0;
+        BeginExit(i, y, hp_pos, hp_dir, false);
+      }
+    }
+  }
+
   void StepFreighters(float dt) {
     for (Spawned& stn : spawned) {  // Schlangeneintraege zerstoerter Frachter entfernen (0x558240: nicht mehr aufloesbare Handles werden aus der Schlange genommen)
       if (stn.dq.empty()) continue;
@@ -3394,7 +3570,7 @@ struct Game::Impl {
     for (Spawned& stn : spawned) {  // angedockter Frachter verschwunden: Kranz aus
       if (stn.docked_id == 0) continue;
       const int oi = FindById(stn.docked_id);
-      if (oi < 0 || spawned[static_cast<size_t>(oi)].dying || spawned[static_cast<size_t>(oi)].fr_state != 7) stn.docked_id = 0;
+      if (oi < 0 || spawned[static_cast<size_t>(oi)].dying || spawned[static_cast<size_t>(oi)].fr_state != 7 && spawned[static_cast<size_t>(oi)].rp_state != 7) stn.docked_id = 0;
     }
     for (size_t i = 0; i < spawned.size(); ++i) {
       Spawned& f = spawned[i];
@@ -3447,84 +3623,8 @@ struct Game::Impl {
       const bool have_dock = HardpointWorld(st, "dock", hp_pos, hp_dir);
       Spawned& stw = spawned[static_cast<size_t>(home)];
       if (have_dock && f.fr_state >= 3) {
-        // Andocken wie im Original (MiningQueueManager, Armada.exe 0x558240; Details docs/formats/economy.md): Warteschlange auf der Achse des Dock-Hardpoints,
-        // Hermite-Kurve zum Ende der Schlange, Vorrutschen entlang der Front, Entladen am Kopf, danach Ausfahrt ueber die Ausgabe-Warteschlange.
-        const float dl_ = std::sqrt(hp_dir[0] * hp_dir[0] + hp_dir[1] * hp_dir[1] + hp_dir[2] * hp_dir[2]);
-        float D[3] = {hp_dir[0] / std::max(1e-4f, dl_), hp_dir[1] / std::max(1e-4f, dl_), hp_dir[2] / std::max(1e-4f, dl_)};
-        float B[3], tail[3];
-        for (int k = 0; k < 3; ++k) B[k] = hp_pos[k] - D[k] * stw.dock_buffer;           // Basis: dockingBuffer hinter dem Dock
-        auto tail_of = [&](float len, float out[3]) { for (int k = 0; k < 3; ++k) out[k] = B[k] - D[k] * len; };
-        tail_of(stw.dq_len, tail);
+        if (StepDocking(f, f.fr_state, stw, hp_pos, hp_dir, dt)) continue;
         const float r2 = 2.0f * RadiusOf(f);
-        if (f.fr_state == 3) {  // Anflug auf den Wartepunkt (Schlangenende minus 40, 0x556d30); naeher als tooCloseToTurn: einreihen (Schlange +2 Radius, Befehl 8, Phase 1)
-          float Q[3];
-          for (int k = 0; k < 3; ++k) Q[k] = tail[k] - D[k] * 40.0f;
-          const float dx = f.st.pos[0] - Q[0], dz = f.st.pos[2] - Q[2];
-          if (std::sqrt(dx * dx + dz * dz) < (f.hodf_ok ? f.hodf.tooCloseToTurn : 50.0f)) {
-            stw.dq.push_back(f.id);
-            stw.dq_len += r2;
-            float E[3];
-            tail_of(stw.dq_len, E);
-            const float d3 = Dist3(E, f.st.pos), k = 0.4f * d3;   // Konstante 0x5d21f8 = 0,4
-            float fwd[3];
-            ShipForward(f.st, fwd);
-            for (int c = 0; c < 3; ++c) { f.sp_p0[c] = f.st.pos[c]; f.sp_p1[c] = E[c]; f.sp_t0[c] = fwd[c] * k; f.sp_t1[c] = D[c] * k; }
-            f.sp_t = 0;
-            f.dock_phase = 1;
-            f.fr_state = 5;
-            f.st.has_target = false;
-            f.st.speed = 0;
-          } else {
-            go(Q);
-          }
-          continue;
-        }
-        const float speed = (f.hodf_ok ? f.hodf.impulseSpeed : 20.0f) * f.dock_factor;
-        auto move_front = [&]() {
-          float fwd[3];
-          ShipForward(f.st, fwd);
-          for (int k = 0; k < 3; ++k) f.st.pos[k] += fwd[k] * speed * dt;   // 0x465b50
-        };
-        if (f.fr_state == 5) {  // Phase 1: Hermite-Kurve (0x556650): Parameter waechst mit Geschwindigkeit dockingSpeedFactor x Impulsgeschwindigkeit
-          const float t = f.sp_t;
-          // Kurve in Potenzform (0x5569a0): c0 = P0, c1 = T0, c2 = 3 (P1 - P0) - 2 T0 - T1, c3 = 2 (P0 - P1) + T0 + T1; P' = 3 c3 t^2 + 2 c2 t + c1 (0x558990), P'' = 6 c3 t + 2 c2 (0x558a30)
-          float c2[3], c3[3], d1[3], d2[3];
-          for (int c = 0; c < 3; ++c) {
-            c2[c] = 3 * (f.sp_p1[c] - f.sp_p0[c]) - 2 * f.sp_t0[c] - f.sp_t1[c];
-            c3[c] = 2 * (f.sp_p0[c] - f.sp_p1[c]) + f.sp_t0[c] + f.sp_t1[c];
-            d1[c] = 3 * c3[c] * t * t + 2 * c2[c] * t + f.sp_t0[c];
-            d2[c] = 6 * c3[c] * t + 2 * c2[c];
-          }
-          const float mag = std::max(1e-3f, std::sqrt(d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2]));
-          const float cx = d1[1] * d2[2] - d1[2] * d2[1], cy = d1[2] * d2[0] - d1[0] * d2[2], cz = d1[0] * d2[1] - d1[1] * d2[0];
-          const float kappa = std::sqrt(cx * cx + cy * cy + cz * cz) / (mag * mag * mag);   // Kruemmung |P' x P''| / |P'|^3 (0x558930, 0x4502b0, 0x450210)
-          // Schritt = min(dt x yawRotationRate / (Kruemmung x |P'|), dockingSpeedFactor x Impulsgeschwindigkeit x dt / |P'|) (0x558240, Phase 1)
-          const float step_turn = kappa > 1e-6f ? dt * f.yaw_rate / (kappa * mag) : 1e9f, step_speed = speed * dt / mag;
-          f.sp_t = std::min(1.0f, f.sp_t + std::min(step_turn, step_speed));
-          const float u = f.sp_t;
-          const float g00 = 2 * u * u * u - 3 * u * u + 1, g10 = u * u * u - 2 * u * u + u, g01 = -2 * u * u * u + 3 * u * u, g11 = u * u * u - u * u;
-          for (int c = 0; c < 3; ++c) f.st.pos[c] = g00 * f.sp_p0[c] + g10 * f.sp_t0[c] + g01 * f.sp_p1[c] + g11 * f.sp_t1[c];
-          if (std::fabs(d1[0]) + std::fabs(d1[2]) > 1e-3f) { const float h[3] = {d1[0], 0.0f, d1[2]}; ShipFromForward(h, &f.st); }
-          f.st.speed = speed;
-          if (f.sp_t >= 1.0f) { f.dock_phase = 2; f.fr_state = 6; const float h[3] = {D[0], 0.0f, D[2]}; ShipFromForward(h, &f.st); }
-          continue;
-        }
-        if (f.fr_state == 6) {  // Phase 2: entlang der Front vorrutschen (Kopf: bis zum Dock-Hardpoint, sonst bis 40 + 2 Radien der Voranstehenden hinter die Basis)
-          const bool head = !stw.dq.empty() && stw.dq.front() == f.id;
-          float P[3];
-          if (head) { for (int k = 0; k < 3; ++k) P[k] = hp_pos[k]; }
-          else {
-            float acc = 0;
-            for (unsigned id : stw.dq) { if (id == f.id) break; const int oi = FindById(id); if (oi >= 0) acc += 2.0f * RadiusOf(spawned[static_cast<size_t>(oi)]); }
-            for (int k = 0; k < 3; ++k) P[k] = B[k] - D[k] * (40.0f + acc);
-          }
-          float fwd[3];
-          ShipForward(f.st, fwd);
-          const float dot = (P[0] - f.st.pos[0]) * fwd[0] + (P[1] - f.st.pos[1]) * fwd[1] + (P[2] - f.st.pos[2]) * fwd[2];
-          if (dot > 0) { move_front(); f.st.speed = speed; }
-          else { f.st.speed = 0; if (head) { f.fr_state = 7; f.dock_phase = 3; stw.docked_id = f.id; if (stw.team == human_team) { CinematicRequest cr; cr.value0 = 3.0f; cr.int0 = 3; cr.int1 = 4; cr.object = f.id; PostCinematic(&cinematic_requests, cr); } } }  // 0x45aa50: dockedShip gesetzt (Strahlenkranz an), Kinosicht-Anforderung fuer den lokalen Spieler (0x47aef0, Werte roh)
-          continue;
-        }
         if (f.fr_state == 7) {  // Phase 3: am Kopf entladen (MiningStation::Receive); fertig: Schlange verlassen, Ausfahrt ueber die Ausgabe-Warteschlange (+0x7c8)
           TeamResources& r = Res(f.team);
           if (r.dilithium < r.dilithium_max && f.cargo > 0) {
@@ -3980,8 +4080,6 @@ struct Game::Impl {
     return false;
   }
 
-  // 0x557400 (OutputQueueManager::Update, Phase 1): das neue Schiff wird mit dockingSpeedFactor x Impulsgeschwindigkeit (0x465b50) entlang seiner Front bewegt, bis es den Punkt
-  // Hardpoint + Front x 1,1 x (Radius Station + Radius Schiff) (Konstante 0x5caa50) erreicht hat; erst danach bekommt es seine Befehle (Frachter: Abbau, Werftschiffe: Sammelpunkt).
   // Rally point of a yard (+0x7d8): changed by order 16 (SET_RALLY, 0x426ebe), otherwise the default made when the yard is created (0x45e540):
   // position + front x 3 x radius (constant 0x5cb170 = 3.0). Y stays on the tap plane (client ships fly on it).
   void RallyOf(const Spawned& yard, float out[3]) const {
@@ -3994,6 +4092,8 @@ struct Game::Impl {
     out[2] = yard.st.pos[2] + f[2] * r;
   }
 
+  // 0x557400 (OutputQueueManager::Update, Phase 1): das neue Schiff wird mit dockingSpeedFactor x Impulsgeschwindigkeit (0x465b50) entlang seiner Front bewegt, bis es den Punkt
+  // Hardpoint + Front x 1,1 x (Radius Station + Radius Schiff) (Konstante 0x5caa50) erreicht hat; erst danach bekommt es seine Befehle (Frachter: Abbau, Werftschiffe: Sammelpunkt).
   void BeginExit(size_t ship, const Spawned& station, const float hp[3], const float dir[3], bool freighter) {
     Spawned& sh = spawned[ship];
     float l = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
@@ -4271,15 +4371,15 @@ struct Game::Impl {
     const bool live = !sp.derelict && sp.team > 0;
     const bool movable = sp.movable;
     const bool armed = !sp.weapons.empty();
-    bool repair_station = false;  // 0x45ebe0: gibt es eine Station des eigenen Teams, die reparieren kann (Werft oder Sternbasis)?
+    bool repair_station = false;  // 0x45ebe0: gibt es ein Objekt des eigenen Teams mit Reparaturbucht (Werft; repairFacility)?
     for (const Spawned& o : spawned)
-      if (o.team == sp.team && !o.movable && !o.dying && (o.cls == "shipyard" || o.cls == "starbase")) repair_station = true;
+      if (o.team == sp.team && !o.movable && !o.dying && !o.derelict && o.repair_fac && !o.starbase_cls) repair_station = true;
     const bool producer = !sp.build_items.empty();
     if (cmd_page == CmdPage::Main) {
       st->control[0] = cmd(UiAction::Move, "b_move", "Bewegen", live && movable, move_armed);
       st->control[1] = cmd(UiAction::Attack, "b_attack", "Angriff", live && armed, attack_armed);
       st->control[2] = cmd(UiAction::Stop, "b_stop", "Stopp", live && (movable || armed));
-      if (movable) st->control[3] = cmd(UiAction::Repair, "b_repair", "Reparatur", false && repair_station);  // Befehl ohne Wirkung im Client
+      if (movable) st->control[3] = cmd(UiAction::Repair, "b_repair", "Reparatur", live && repair_station, sp.order == Spawned::kOrdRepair);
       st->control[4] = cmd(UiAction::Orders, "b_order", "Befehle", live);
       st->control[5] = cmd(UiAction::StandDown, "b_standdown", "Abwarten", live, sp.alert == 3);
       if (sp.freighter) st->control[6] = cmd(UiAction::Harvest, "b_harvest", "Abbauen", live);  // Freighter 0x4583b0: BUTTON_LOCATION_HARVEST, cmd 0x14
@@ -4521,8 +4621,13 @@ struct Game::Impl {
         Message(n > 0 ? (scout ? "Erkunden." : "Suchen und Zerstoeren.") : "Kein Schiff kann das.");
         break;
       }
-      case UiAction::Repair:
-        Message("Noch nicht umgesetzt."); break;
+      case UiAction::Repair: {  // manual: "proceed to the nearest friendly repair bay and get repaired and recrewed"
+        int n = 0;
+        for (Spawned& x : spawned)
+          if (CmdSel(x) && x.movable && !x.derelict && FindRepairYard(x) >= 0) { StartOrder(x, Spawned::kOrdRepair, nullptr, 0); x.rp_state = 0; ++n; }
+        Message(n > 0 ? "Zur Reparatur." : "Keine Werft mit Reparaturbucht.");
+        break;
+      }
       case UiAction::Orders: cmd_page = CmdPage::Orders; break;
       case UiAction::Transport:
         transport_armed = !transport_armed;
@@ -4864,6 +4969,7 @@ void Game::OnFrame(double dt) {
     s.StepAi(static_cast<float>(std::min(dt, 0.1)));
     s.StepProduction(static_cast<float>(std::min(dt, 0.1)));
     s.StepFreighters(static_cast<float>(std::min(dt, 0.1)));
+    s.StepRepairs(static_cast<float>(std::min(dt, 0.1)));
     struct SymItem { float p[3]; int team; std::string wire; bool sel; const Impl::Spawned* ship; };
     std::vector<SymItem> syms;
     std::vector<char> sym_inst(s.scene.instances.size(), 0);
@@ -5603,6 +5709,23 @@ std::string Game::DebugOrder(const std::string& kind) {
   int n = 0;
   unsigned first_station = 0;
   for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { first_station = o.id; break; }
+  if (kind == "repair") {  // test: a shipyard next to the first human station, every human warship damaged (systems lost, crew half), then the repair order
+    const Impl::Spawned* st0 = nullptr;
+    for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { st0 = &o; break; }
+    if (!st0) return "no station";
+    const std::string yard = ToLowerAscii(st0->odf).substr(0, 1) + "yard";
+    const float yp[3] = {st0->st.pos[0] + 500.0f, 0.0f, st0->st.pos[2]};
+    if (!s.SpawnAt(yard, s.human_team, yp, false, false)) return "yard not spawned: " + yard;
+    for (Impl::Spawned& o : s.spawned) {
+      if (o.team != s.human_team || !o.movable) continue;
+      for (auto& sy : o.hp.sys) if (sy.max_points > 1) sy.points = sy.max_points / 2;
+      SetCrew(&o.hp, o.hp.crew * 0.5f);
+      s.StartOrder(o, Impl::Spawned::kOrdRepair, nullptr, 0);
+      o.rp_state = 0;
+      ++n;
+    }
+    return "repair given to " + std::to_string(n) + " ships, yard " + yard;
+  }
   if (kind == "recrew" || kind == "rally") {  // yard tests: recrew = halve the crew and switch recrew on; rally = rally point 600 m to the side
     for (Impl::Spawned& o : s.spawned) {
       if (o.team != s.human_team || o.movable || !o.starbase_cls) continue;
@@ -5640,7 +5763,7 @@ std::string Game::DebugReport() const {
     if (ships + stations + freighters + armed == 0) continue;
     for (const Impl::Spawned& o : s.spawned)
       if (o.team == t && o.order != Impl::Spawned::kOrdNone && !o.dying) {
-        std::snprintf(buf, sizeof buf, "  ship %u order %d pos (%.0f,%.0f) goal (%.0f,%.0f) radius %.0f target %u\n", o.id, o.order, o.st.pos[0], o.st.pos[2], o.ord_p1[0], o.ord_p1[2], o.ord_r, o.target_id);
+        std::snprintf(buf, sizeof buf, "  ship %u order %d pos (%.0f,%.0f) goal (%.0f,%.0f) radius %.0f target %u rp %d phase %d crew %.0f/%.0f dmg %d\n", o.id, o.order, o.st.pos[0], o.st.pos[2], o.ord_p1[0], o.ord_p1[2], o.ord_r, o.target_id, o.rp_state, o.dock_phase, o.hp.crew, o.hp.crew_max, o.hp.damaged() ? 1 : 0);
         out += buf;
       }
     for (const Impl::Spawned& o : s.spawned)

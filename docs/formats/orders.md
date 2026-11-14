@@ -74,12 +74,17 @@ Both belong to the yard class (shipyard and starbase, ODF keys read by 0x4561c0)
   identified by what they do, not by the name.
 - Client: `Spawned::recrew`, `StepProduction`; `Spawned::rally_set/rally`, `RallyOf`, `StepExits`, tap handling `rally_armed`. Headless tests: `--human-order recrew|rally`.
 
-## Repair (partly read, NOT implemented)
-- Ships are repaired by yard-class objects with the ODF key `repairFacility` (default 1; only `zmama` sets 0) through a `RepairQueueManager` (RTTI, vtable 0x5cca3c) that shares the spline docking code (0x558240) with the mining queue.
-  Other keys of the same loader: `repairHardpoint`, `dockingBuffer` (default 90), `repairSide` (default 2, `byard2` uses 0), `buildAnimation`.
-- The queue accepts a craft only while its order type is 0x13 (0x5577f0) and it belongs to the same owner. The station state 0x10 (animation) is started when a craft reaches the head (0x45eaa0, same as for freighters).
-- Systems repair themselves everywhere in the original (health step 0x4683d0, see `ship-health.md`); what the docked repair adds (rate, hull) was **not found**. The handler 0x42a8c0 scans the craft's weapon list for a usable weapon and target
-  (0x463b70 / 0x463c10) and is not a plain "fly to the dock" routine as the name suggests.
+## Repair (partly read, build 108)
+Manual: "proceed to the nearest friendly repair bay and get repaired and recrewed. Must have a repair bay (shipyard)". The shipyard has two bays, one for construction (node `build`) and one for repair (node `repair`).
+- **Verified (0x45ecd0, called by the handler 0x42a8c0):** yard choice. Candidates: objects of the same owner that are not derelict, not disabled and whose class has `repairFacility` (yard class key, default 1; `zmama` sets 0).
+  Cost = (centre distance - craft radius - yard radius) / craft speed + 5 x number of ships in the yard's queue (constant 0x5ca6c0 = 5.0); the cheapest wins; when the chosen yard is gone the choice is repeated.
+- **Verified:** the approach and the queue are the freighter's (RepairQueueManager, vtable 0x5cca3c, shares the update 0x558240 with the mining queue: waiting point 40 behind the queue end, spline, slide forward, head).
+  `dockingBuffer` default of the yard class is 90 (0x456ca8); `repairSide` default 2 (used to mirror the approach side, 0x556e00 - not ported), `repairHardpoint` is read but no ODF sets it (the node is called `repair`).
+  The queue accepts a craft only while its order type is 0x13 and it belongs to the same owner (0x5577f0). The docked craft's own handler (order 8, 0x42af80) only reacts to attacks.
+- **Not found:** the repair itself. Systems repair everywhere in the original (health step 0x4683d0, `ship-health.md`); crew refill and any bonus at the dock were not located.
+- **Assumed (client):** at the head of the queue the crew is refilled from the team pool at 10 per second and the craft waits until all systems are complete (they repair at the normal pace); then it leaves through the yard's
+  output queue (new yard craft behaviour, i.e. it goes to the rally point afterwards). Starbases are not used (their models have no `repair` node).
+- Client: `FindRepairYard`, `StepRepairs`, `StepDocking` (shared with the freighters), `Spawned::kOrdRepair`. Headless test: `--human-order repair`.
 
 ## Other order types
 GET_REPAIR (0x42a8c0, repair queue of a facility), RECYCLE (0x42a450, decommission), SET_RALLY / GO RALLY POINT, RECREW are analysed in `docs/formats/economy.md` and the GUI document

@@ -113,3 +113,7 @@ Still assumed: how a cloaked ship is hidden (rule not found), see-through look, 
 ## Open items (14.11.2026, reported by the project owner)
 - **Mining is still not like the original** (user observation after build 113; details unknown): compare approach, circling, beam, cargo and unloading with the running original and fix the differences.
 - **Zoom bug:** after some time (repeated zooming) it is no longer possible to zoom in properly. Not analysed yet (suspects: the zoom limit after pivot/pan changes, `map_dist` / `zoom` drifting, minimum distance clamp).
+
+## Build 114
+- Mining: freighters only mine moons the team has already seen (sensor range)? At the very start does a freighter built before any moon was seen stay idle? Does a moon shrink to half size while it is mined out?
+- Zoom: can you zoom in far enough to see a single ship on a large map?

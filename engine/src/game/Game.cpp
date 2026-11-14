@@ -142,6 +142,10 @@ struct Game::Impl {
 
   // Kamera
   float yaw = 0.5f, pitch = 0.35f, zoom = 1.0f;
+  // Zoom limits: the map view is sized for the whole map (map_dist up to ~30000), so a fixed factor of 30 left the camera 1000 m away on big maps and a ship could never be seen close up.
+  // The nearest camera distance is therefore fixed (50 m), the factor follows from the map size.
+  float ZoomMax() const { return map_mode && map_loaded ? std::max(30.0f, map_dist / 50.0f) : 30.0f; }
+  float ClampZoom(float z) const { return std::max(0.2f, std::min(ZoomMax(), z)); }
   float radius = 1.0f;
   float view_pan[2] = {0, 0};  // Modellansicht: Verschiebung (Bildebene, Welteinheiten)
   float center[3] = {0, 0, 0};
@@ -411,7 +415,7 @@ struct Game::Impl {
     float ord_last[3] = {0, 0, 0};  // Festhaengen: Ort (+0x140) und Zeit (+0x13c)
     float ord_think = 0;
   };
-  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; unsigned user = 0; };
+  struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; unsigned user = 0; int object = -1; unsigned seen = 0; /* bit per team: ever inside the sensor range of a craft of that team (object +0xb8) */ };
   int moon_sel = -1;  // angetippter Dilithiummond (Infofeld), -1 keiner  // Dilithiummond der Karte (ODF mdmoon*, maxHealth = Vorrat)
   std::vector<Moon> moons;
   bool infinite_moons = false;
@@ -660,6 +664,7 @@ struct Game::Impl {
       if (!mo || !mo->GetString("classLabel", &mcls) || mcls != "scrap") continue;  // Dilithiummond (mdmoon1..3, mmooninf): classLabel "scrap" aus mdmoon.odf
       done.insert(in.object);
       Moon m;
+      m.object = in.object;
       m.infinite = false;
       { int inf = 0; if (mo->GetInt("infinite", &inf)) m.infinite = inf != 0; }
       { std::string un; m.name = mo->GetString("unitName", &un) && !un.empty() ? un : std::string("Dilithium Moon"); }
@@ -1451,8 +1456,8 @@ struct Game::Impl {
     else if (key == "@team") CycleSpawnTeam();
     else if (key == "@mute") ToggleMute();
     else if (key == "@grid") ToggleGrid();
-    else if (key == "@zin") zoom = std::min(30.0f, zoom * 1.25f);
-    else if (key == "@zout") zoom = std::max(0.2f, zoom / 1.25f);
+    else if (key == "@zin") zoom = ClampZoom(zoom * 1.25f);
+    else if (key == "@zout") zoom = ClampZoom(zoom / 1.25f);
     else if (key == "@reset") { zoom = 1.0f; map_yaw = 0.6f; map_pitch = 0.8f; }
     else if (key == "@sympx") { sym_px = sym_px >= 160.0f ? 16.0f : sym_px * 1.5f; OpenMenu(MenuKind::Advanced); }
     else if (key == "@hudrace") { hud_race = (hud_race + 1) % kHudRaceCount; LoadHud(); Message(std::string("HUD: ") + HudRaceName(static_cast<HudRace>(hud_race))); }
@@ -3795,6 +3800,26 @@ struct Game::Impl {
   }
 
   void StepFreighters(float dt) {
+    // Visibility (0x46d100, per frame): an object inside the sensor radius (squared compare of the x/z distance) of a craft of a team gets that team's bit in +0xb8 for good.
+    // 0x435010 only offers a freighter moons whose bit for its team is set.
+    for (const Spawned& o : spawned) {
+      if (o.team <= 0 || o.team > 31 || o.derelict || o.dying || !o.hp.alive()) continue;
+      const float r = o.hp.sys_ok(kSensors) ? o.scan : o.scan_damaged;
+      for (Moon& mo : moons) {
+        const float dx = mo.pos[0] - o.st.pos[0], dz = mo.pos[2] - o.st.pos[2];
+        if (dx * dx + dz * dz < r * r) mo.seen |= 1u << o.team;
+      }
+    }
+    // Scrap::Update (0x453420): the moon keeps its user only while that craft exists, is not derelict, has this moon as its target (+0x79c) and its current order is MINE (24).
+    for (size_t mk = 0; mk < moons.size(); ++mk) {
+      Moon& mo = moons[mk];
+      if (mo.user == 0) continue;
+      const int ui = FindById(mo.user);
+      if (ui < 0) { mo.user = 0; continue; }
+      const Spawned& u = spawned[static_cast<size_t>(ui)];
+      const bool mining = u.freighter && !u.derelict && !u.dying && u.hp.alive() && u.fr_moon == static_cast<int>(mk) && !u.fr_manual && u.dock_phase == 0 && u.fr_state < 4;
+      if (!mining) mo.user = 0;
+    }
     for (OreBeam& ob : ore_beams) ob.age += dt;
     ore_beams.erase(std::remove_if(ore_beams.begin(), ore_beams.end(), [](const OreBeam& b) { return b.age >= b.life; }), ore_beams.end());
     for (Spawned& stn : spawned) {  // Schlangeneintraege zerstoerter Frachter entfernen (0x558240: nicht mehr aufloesbare Handles werden aus der Schlange genommen)
@@ -3840,6 +3865,7 @@ struct Game::Impl {
         for (const AiTeam& at : ai_teams) ai_team = ai_team || at.team == f.team;
         for (size_t k = 0; k < moons.size(); ++k) {
           if (exhausted(moons[k])) continue;
+          if (!((moons[k].seen >> f.team) & 1u)) continue;   // 0x435010: only moons the team has seen
           if (ai_team) {  // 0x435010: nur fuer KI-Teams (Teamdatensatz +0xa8): ein Mond mit mindestens 3 anderen Frachtern im Umkreis 125 wird uebergangen
             int crowd = 0;
             for (const Spawned& o : spawned)
@@ -3931,7 +3957,7 @@ struct Game::Impl {
         continue;
       }
       bool other = false;
-      if (m.user != 0 && m.user != f.id) other = FindById(m.user) >= 0;
+      if (m.user != 0 && m.user != f.id) { const int ui = FindById(m.user); other = ui >= 0 && !spawned[static_cast<size_t>(ui)].derelict; }   // 0x453550
       const float h = 0.0f - m.pos[1];
       float R = std::sqrt(std::max(0.0f, range * range - h * h)) - 10.0f;
       if (other) R += 30.0f;
@@ -3975,6 +4001,7 @@ struct Game::Impl {
       ob.moon = f.fr_moon;
       ob.life = 1.25f;   // lifeSpan of the minebm ordnance
       ore_beams.push_back(ob);
+      { std::string snd; if (odf_lib) if (const OdfObject* wo = odf_lib->Get("gminebm.odf")) wo->GetString("fireSound", &snd); if (!snd.empty()) PlayEffect(snd, 0.4f); }   // fireSound of the weapon
     }
   }
 
@@ -4997,8 +5024,8 @@ struct Game::Impl {
       }
       case UiAction::Stop: StopSelected(); break;
       case UiAction::Delete: DeleteSelected(); break;
-      case UiAction::ZoomIn: zoom = std::min(30.0f, zoom * 1.25f); break;
-      case UiAction::ZoomOut: zoom = std::max(0.2f, zoom / 1.25f); break;
+      case UiAction::ZoomIn: zoom = ClampZoom(zoom * 1.25f); break;
+      case UiAction::ZoomOut: zoom = ClampZoom(zoom / 1.25f); break;
       case UiAction::ResetView:
         zoom = 1.0f;
         if (map_mode) { map_yaw = 0.6f; map_pitch = 0.8f; } else { yaw = 0.5f; pitch = 0.35f; view_pan[0] = view_pan[1] = 0; }
@@ -5286,7 +5313,14 @@ void Game::OnFrame(double dt) {
       }
       const float* c = kMapTeamColors[inst.team >= 0 && inst.team < 9 ? inst.team : 0];
       r->SetTeamColor(c[0], c[1], c[2]);
-      r->Draw(proj * view * inst.transform, rot * inst.rotation, &inst.transform);
+      Mat4 itf = inst.transform;
+      for (const Impl::Moon& mo : s.moons)   // Scrap::SetHealth (0x4532b0): the moon's scale is 0.5 + 0.5 x health / maxHealth, so it shrinks to half its size while it is mined out
+        if (mo.object == inst.object && inst.object >= 0) {
+          const float ratio = mo.infinite || s.infinite_moons ? 1.0f : std::max(0.0f, std::min(1.0f, mo.amount / std::max(1.0f, mo.amount0)));
+          const float f = 0.5f + 0.5f * ratio;
+          for (int q : {0, 1, 2, 4, 5, 6, 8, 9, 10}) itf.m[q] *= f;
+        }
+      r->Draw(proj * view * itf, rot * inst.rotation, &itf);
     }
     for (size_t ii = 0; ii < s.scene.instances.size(); ++ii) {  // Sprites (Nebel, Positionslichter) nach den Modellen
       const MapInstance& inst = s.scene.instances[ii];
@@ -5926,7 +5960,7 @@ void Game::OnPointer(const PointerEvent& e) {
           while (dang < -kPi) dang += 2.0f * kPi;
           float pv[3] = {s.map_target[0], s.map_target[1], s.map_target[2]};
           s.GroundPoint(cx, cy, pv);
-          s.zoom = std::max(0.2f, std::min(30.0f, s.zoom * dist / s.g_dist));  // Spreizen/Zusammenziehen: Zoom
+          s.zoom = s.ClampZoom(s.zoom * dist / s.g_dist);  // Spreizen/Zusammenziehen: Zoom
           // Verdrehen: Ansicht dreht mit (Uhrzeigersinn der Finger = Szene im Uhrzeigersinn); gemeinsames Ziehen: Gier/Neigung
           s.OrbitAbout(pv, -dang + (cx - s.g_cx) * k, (cy - s.g_cy) * k);
           s.g_dist = dist;
@@ -5951,7 +5985,7 @@ void Game::OnPointer(const PointerEvent& e) {
         float dang = ang - s.g_ang;
         while (dang > kPi) dang -= 2.0f * kPi;
         while (dang < -kPi) dang += 2.0f * kPi;
-        s.zoom = std::max(0.2f, std::min(30.0f, s.zoom * dist / s.g_dist));
+        s.zoom = s.ClampZoom(s.zoom * dist / s.g_dist);
         s.yaw += -dang + (cx - s.g_cx) * k;
         s.pitch = std::max(-1.5f, std::min(1.5f, s.pitch + (cy - s.g_cy) * k));
         s.g_dist = dist;
@@ -5975,7 +6009,7 @@ void Game::OnPointer(const PointerEvent& e) {
 }
 
 void Game::OnScroll(float amount) {
-  impl_->zoom = std::max(0.2f, std::min(30.0f, impl_->zoom * std::pow(1.1f, amount)));
+  impl_->zoom = impl_->ClampZoom(impl_->zoom * std::pow(1.1f, amount));
   impl_->idle = 0.0f;
 }
 

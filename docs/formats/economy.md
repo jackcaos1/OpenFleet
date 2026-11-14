@@ -201,3 +201,14 @@ in state 4 unchanged, in the bay states (0, 1, 6, 7) the hardpoint's orientation
 - **Not read / assumed:** the exact meaning of the length-10 velocity vector (the client reads it as a speed cap), the "other user" rule uses the stored user without the state check of earlier builds, the docking path and its speed (ported earlier, not compared with a running original).
 
 Correction (build 113): the welding beam texture `weldbeam` is one column of four frames (tex1x4 = rows); the client had used columns and drew four parallel stripes per beam.
+
+### Mining audit, second pass (build 114)
+Everything in the mining chain was re-read without a symptom list. Differences found and fixed:
+- **Moon choice (0x435010):** only moons the team has *seen* are candidates. Every object has a per-team bit field `+0xb8` ("ever seen") set by the per-frame visibility pass (0x46d100: an object whose x/z distance to a craft of the team is inside that craft's sensor radius). A freighter with no seen moon has no target and idles (cargo <= 5) - the client used to send it to any moon of the map. Client: `Moon::seen`, set in `StepFreighters` from the sensor range (`rangeScan`, `rangeScan` of damaged sensors) of every living craft and station of the team.
+- **Moon user (0x453550 / 0x453420):** `0x453550` resolves the stored handle and returns null for a destroyed or derelict craft. The moon's per-frame update clears the user unless the craft exists, is not derelict, has this moon as its target (+0x79c) and its current order is MINE (24): stopping, moving, docking (order 8) or dying releases the moon. The client now does the same each frame (`Scrap::Update`).
+- **Moon health display (Scrap::SetHealth 0x4532b0):** the moon's scale is 0.5 + 0.5 x health / maxHealth, i.e. it shrinks to half its size while it is mined out (infinite moons stay full size). The material `glow_ore` that the class also dims by the health ratio does not exist in the shipped moon models (they use `glowdmoon` / `pinkok`), so only the scale is visible. Client: moon instances are drawn scaled.
+- Mining beam sound: `fireSound` (`msmine.wav`) plays with every shot.
+- Not changed: delivery (queue and docking), moon exhaustion (health exactly 0), AI crowd rule.
+
+### Zoom (client)
+The map view's camera distance is map_dist / zoom with zoom limited to 30. map_dist is sized for the whole map (max(1200, 2.4 x extent), e.g. about 30000 on 2duel), so on big maps the nearest camera distance was about 1000 m and ships could not be seen close up. The limit is now fixed at a camera distance of 50 m (`ZoomMax = max(30, map_dist / 50)`).

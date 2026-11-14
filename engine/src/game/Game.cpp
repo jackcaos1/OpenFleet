@@ -5032,9 +5032,13 @@ void Game::OnFrame(double dt) {
       ShipMatrices(sp.st, sp.scale, &m, &r);
       const float* c = kMapTeamColors[sp.team >= 0 && sp.team < 9 ? sp.team : 0];
       ModelRenderer* mr = sp.docked_id != 0 && it->second.r_ore ? it->second.r_ore.get() : it->second.r.get();
+      // cloaked ships: enemies of the human player see nothing once fully cloaked, own ships stay visible but see-through (ASSUMED look, the original drawing was not read)
+      if (sp.cloak > 0.0f && sp.team != s.human_team && sp.cloak >= 0.99f) continue;
+      mr->SetOpacity(sp.cloak > 0.0f ? (sp.team == s.human_team ? 1.0f - 0.65f * sp.cloak : 1.0f - sp.cloak) : 1.0f);
       mr->SetTeamColor(c[0], c[1], c[2]);
       mr->Draw(proj * view * m, rot * r, &m);
-      if (it->second.sp) it->second.sp->Draw(proj, view * m, s.clock);
+      mr->SetOpacity(1.0f);
+      if (it->second.sp && !(sp.cloak > 0.0f)) it->second.sp->Draw(proj, view * m, s.clock);
     }
     if (s.map_loaded && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {  // Einzelne Sterne zwischen Spielebene und Hintergrund: Tiefenwirkung beim Verschieben (Nutzerwunsch)
       if (s.star_key != s.map_current + 1000) {

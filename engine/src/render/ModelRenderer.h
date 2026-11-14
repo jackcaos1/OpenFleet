@@ -51,6 +51,7 @@ class ModelRenderer {
     float prng[32][2] = {};      // Abfallbeginn, Abfallbereich
   };
   static void SetSceneLighting(const SceneLighting& l, const Mat4& view_rot);
+  void SetOpacity(float a) { opacity_ = a; }   // < 1: all opaque faces are blended (cloaked ships)
   void SetLit(bool on) { lit_ = on; }   // false: Himmelskasten usw. ohne Szenenlicht
   // mvp: Projektion*Ansicht*Modell, normal_rot: nur die Drehung des Modells.
   void Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* world = nullptr) const;  // world: Modell->Welt (fuer Punktlichter)
@@ -79,6 +80,8 @@ class ModelRenderer {
   GLint u_mvp_ = -1, u_nrot_ = -1, u_color_ = -1, u_tex_ = -1, u_use_tex_ = -1, u_alpha_mode_ = -1, u_unlit_ = -1;
   int alpha_mode_ = 0;
   bool lit_ = true;
+  float opacity_ = 1.0f;
+  GLint u_opacity_ = -1;
   GLint u_mspec_ = -1, u_mpow_ = -1, u_amb_ = -1, u_mamb_ = -1, u_mdiff_ = -1, u_nl_ = -1, u_ldir_ = -1, u_lcol_ = -1, u_model_ = -1, u_vrot_ = -1, u_np_ = -1, u_origin_ = -1, u_ppos_ = -1, u_pcol_ = -1, u_prng_ = -1;
   bool force_additive_ = false;
   float team_[3] = {1, 1, 1};

@@ -44,6 +44,7 @@ uniform vec3 u_color;
 uniform float u_use_tex;
 uniform float u_alpha_mode;
 uniform float u_unlit;
+uniform float u_opacity;
 uniform vec3 u_amb;
 uniform vec3 u_mamb;
 uniform vec3 u_mdiff;
@@ -107,7 +108,7 @@ void main() {
     float em = u_alpha_mode < 3.5 ? t.a : 1.0 - t.a;
     shade = mix(shade, vec3(1.0), em);
   }
-  o_color = vec4(t.rgb * u_color * shade + v_spec * (1.0 - u_unlit), u_alpha_mode > 1.5 && u_alpha_mode < 2.5 ? t.a : 1.0);
+  o_color = vec4(t.rgb * u_color * shade + v_spec * (1.0 - u_unlit), (u_alpha_mode > 1.5 && u_alpha_mode < 2.5 ? t.a : 1.0) * u_opacity);
 }
 )";
 
@@ -156,6 +157,7 @@ bool ModelRenderer::Init() {
   u_mvp_ = glGetUniformLocation(program_, "u_mvp");
   u_nrot_ = glGetUniformLocation(program_, "u_nrot");
   u_color_ = glGetUniformLocation(program_, "u_color");
+  u_opacity_ = glGetUniformLocation(program_, "u_opacity");
   u_tex_ = glGetUniformLocation(program_, "u_tex");
   u_use_tex_ = glGetUniformLocation(program_, "u_use_tex");
   u_alpha_mode_ = glGetUniformLocation(program_, "u_alpha_mode");
@@ -305,6 +307,7 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
   glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, mvp.m);
   glUniformMatrix4fv(u_nrot_, 1, GL_FALSE, normal_rot.m);
   glUniform1i(u_tex_, 0);
+  glUniform1f(u_opacity_, opacity_);
   const bool use_light = lit_ && g_light.enabled;
   glUniform1i(u_nl_, use_light ? g_light.count : -1);
   if (use_light) {
@@ -329,6 +332,10 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
   // Durchgang 2: additive Effektflaechen (derzeit ungenutzt).
   for (int pass = 0; pass < 3; ++pass) {
     if (pass == 1 && alpha_mode_ != 2) continue;
+    if (pass == 0 && opacity_ < 1.0f) {
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
     if (pass == 1) {
       glEnable(GL_BLEND);
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

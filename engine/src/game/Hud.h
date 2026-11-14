@@ -44,6 +44,7 @@ struct HudShip {
   float crew_state = 1;               // 1 gruen, 0,5 gelb, 0 rot
   float hull = 1;                     // Huelle 0..1 (faerbt das Drahtgitter)
   float construction = -1;            // >= 0: Baufortschritt, ersetzt die Energieanzeige (infoSingleConstructionBar)
+  float cargo = -1;                   // >= 0: freighter cargo 0..1, drawn with the dilithium bar in place of the energy bar (ShipDisplay DilithiumBar, 0x48c550)
   float dilithium = -1;               // >= 0: Dilithiummond, Vorrat 0..1 (infoSingleDilithiumBar); nur Name, Drahtgitter und Balken
 };
 

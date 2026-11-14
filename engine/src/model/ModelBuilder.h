@@ -20,7 +20,8 @@ struct ModelBatch {
   float power = 0;          // Glanzexponent (Armada.exe 0x58dd90: Schlick-Naeherung t/(p-p*t+t))
   int lighting = 1;         // Lichtmodell des Materials: 0 Diffus fest, 1 Ambient+Diffus, 2 zusaetzlich Glanzlicht (Tabelle [renderer+0x80..0x88])
   bool cull_back = false;
-  bool additive = false;    // (derzeit ungenutzt) additiv gemischte Effektflaechen
+  bool additive = false;    // additiv gemischte Effektflaechen (Strahlenkranz "oreglow" der Bergbaustation: Textur wbeams ohne Alpha, schwarz = durchsichtig)
+  bool ore_ring = false;    // Nachfahre des Knotens oreglow: dreht sich waehrend des Entladens um dessen Ursprung (Animationskanal des Knotens, eine Drehung je 2,7 s)
   bool unlit = false;       // Lichtmodell 0 im Material (glow_*, warp_*, impulse_*): ohne Beleuchtung zeichnen
   bool team = false;        // Material team_*: Textur wird mit der Spielerfarbe eingefaerbt (nicht team_Bglow, das ist Borg-Gruen)
   bool cutout = false;      // Borg-Ueberzug: Alpha der Textur schneidet das Gitter aus (Alpha 0 = durchsichtig)
@@ -50,6 +51,7 @@ struct Model {
   float bounds_max[3] = {0, 0, 0};
   std::vector<ModelSpriteNode> sprite_nodes;
   std::vector<ModelHardpoint> hardpoints;
+  float ore_pivot[3] = {0, 0, 0};   // Ursprung des Knotens oreglow (GL)
   size_t triangle_count = 0;
   bool winding_flipped = false;
 };

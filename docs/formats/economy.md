@@ -183,3 +183,21 @@ while fewer than 10 are revealed, a random corner of it, in world space) and the
 (`weldingBeamSprite`, width `weldingBeamWidth`; 0x518dc0 -> 0x597370) runs from the bee to the weld point; then a new weld point is chosen. Speed limit 80 m/s (0x5d2af0). Orientation: while flying along its heading (curve tangent, look-at matrix 0x55d840),
 in state 4 unchanged, in the bay states (0, 1, 6, 7) the hardpoint's orientation. So the bees face the structure and the beam ends on its surface. States 5 (to the exit point), 6 (to the bay), 7 (closing, `timeUntilClosure`, then the bee is deleted) mirror 1 and 0.
 **Assumed:** what recalls the bees (the client does it when `timeUntilClosure` seconds of the build are left); the smoothing and the random wobble of the bee's flight (the original adds a leash and jitter, 0x5189a6..0x518c25) are not ported.
+
+## Mining: approach, orbit, beam, cargo display (read 14.11.2026, build 113)
+**MINE handler 0x42b430 (verified).** range = range of the mining beam weapon (`gminebm`, 120; 0x4582c0). G = distance to the moon - craft radius - moon radius.
+- G > range - 15 (0x5ca8a8): fly to the point at distance (craft radius + moon radius) from the moon on the line moon -> craft (0x42e4a0).
+- Otherwise **circle the moon** (0x42dc30): radius R = sqrt(range^2 - h^2) - 10 (0x5ca6b8) with h = height of the combat plane above the moon (moons sit `distanceBelowGrid` = 110 below, so R = 38 over the moon in the client's frame), R + 30 (0x5ca8a0) while another freighter is the moon's user (it then does not fire).
+  Each frame the target point on the circle is the craft's own angle around the moon minus pi/4 (0x5fbc10), and the craft steers along the direction craft -> point with a velocity vector of length 10 (0x5fbc18; 0x42f740); the client flies to a point pushed out along that direction and caps the speed at 10.
+- The beam is a normal weapon: `0x4582f0` sets the moon as target and presses it; `Weapon::Process` fires every shotDelay (1.5, no crew effect) from the hardpoint of the slot (hp01 hp02 hp03 hp10) nearest to the moon that reaches it.
+- **Hit (MiningBeam 0x4e0900):** take = min(free cargo, moon health, damageBase 15), cargo += take (clamped), moon health -= take, the freighter becomes the moon's user (0x453580); with the cargo full the user is released (0x42b79c).
+- **Beam model:** ordnance class minebm: `wmbeam.sod` (meshes `outerbeam` and `beam`, additive material add_orebeam, texture Wtractor; the two animation channels turn them about the beam axis in opposite directions, one turn per 3.333 s),
+  lifeSpan 1.25, scale (radiusScale 2.5, 2.5, distance / lengthScale 5) (0x4e0850), start at the hardpoint, end at the moon's **centre**, both updated every frame (0x4e0a20).
+- **Cargo display (0x4583e0 and the info panel's DilithiumBar, 0x48c550):** the freighter model's `ore` node has meshes `ore2` .. `ore11`; with fill = cargo / capacity x 100 (0x5ca86c) the mesh `ore<n>` is lit in (0, 0.6, 1) when n x 10 <= fill and black otherwise.
+  The info panel shows cargo / capacity in the dilithium bar (`infoSingleDilithiumBar`, colour 0 / 0.5 / 1).
+- **Ore ring of the mining station:** the meshes below the node `oreglow` use the texture `wbeams` (RGB without alpha) and are drawn additively (transparent); the model's animation channel on the oreglow node turns the ring about its y axis, one turn per 2.7 s, while a
+  freighter is docked (animation state 0x10, 0x45aa50 / 0x58c750). The `dock` hardpoint of all four mining models is a horizontal node near the centre of the station (the freighter slides in horizontally to the middle).
+- Client: `StepFreighters` (state 1 / 2), `OreBeam`, `ModelRenderer::SetOreFill / SetBeamRoll / SetRingAngle`, `HudShip::cargo`. Headless screenshots: `--shot-at <s> --shot-focus x,z,dist --screenshot out.ppm` together with `--autostart`.
+- **Not read / assumed:** the exact meaning of the length-10 velocity vector (the client reads it as a speed cap), the "other user" rule uses the stored user without the state check of earlier builds, the docking path and its speed (ported earlier, not compared with a running original).
+
+Correction (build 113): the welding beam texture `weldbeam` is one column of four frames (tex1x4 = rows); the client had used columns and drew four parallel stripes per beam.

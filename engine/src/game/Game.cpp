@@ -368,6 +368,8 @@ struct Game::Impl {
     float dock_factor = 2.5f;               // dockingSpeedFactor aus der Physik-ODF (Vielfaches der Impulsgeschwindigkeit)
     bool recrew = false;                    // +0x7ac: recrew switched on (toggle, 0x426c1d)
     float recrew_rate = 10.0f;              // class +0x548 recrewRate
+    bool orbit_cap = false;                 // freighter circling a moon: speed cap 10 (0x42dc30 hands a velocity of length 10 to 0x42f740)
+    float orbit_saved_cap = 0;
     bool starbase_cls = false;              // Besatzungszuwachs je Sekunde
     float crew_rate = 0, crew_planet = 1.0f;
     bool has_site = false;                  // Bauschiff: Baustelle gewaehlt
@@ -535,6 +537,7 @@ struct Game::Impl {
     projectiles.clear();
     fx.clear();
     fireballs.clear();
+    ore_beams.clear();
     shockwaves.clear();
     parties.clear();
     spawn_models.clear();
@@ -3792,6 +3795,8 @@ struct Game::Impl {
   }
 
   void StepFreighters(float dt) {
+    for (OreBeam& ob : ore_beams) ob.age += dt;
+    ore_beams.erase(std::remove_if(ore_beams.begin(), ore_beams.end(), [](const OreBeam& b) { return b.age >= b.life; }), ore_beams.end());
     for (Spawned& stn : spawned) {  // Schlangeneintraege zerstoerter Frachter entfernen (0x558240: nicht mehr aufloesbare Handles werden aus der Schlange genommen)
       if (stn.dq.empty()) continue;
       for (size_t k = stn.dq.size(); k-- > 0;) {
@@ -3901,38 +3906,85 @@ struct Game::Impl {
         continue;
       }
       // Abbau-Zustand (Befehl 24, 0x42b430): voll (Rest unter 0,01) -> abliefern; kein Mond -> abliefern ab 5 Ladung, sonst Leerlauf
+      if (f.orbit_cap && f.hv.ok && (room < 0.01f || f.fr_moon < 0)) { f.hv.st.SetSpeedCap(f.orbit_saved_cap); f.orbit_cap = false; }
       if (room < 0.01f) { release(); f.fr_state = 3; continue; }
       if (f.fr_moon < 0) {
         if (f.cargo > 5.0f) f.fr_state = 3; else f.fr_state = 0;
         continue;
       }
       Moon& m = moons[static_cast<size_t>(f.fr_moon)];
-      float dx = f.st.pos[0] - m.pos[0], dz = f.st.pos[2] - m.pos[2];
-      const float dl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
-      // ein Frachter je Mond: ist ein anderer der letzte Nutzer, haelt dieser 30 weiter draussen und schiesst nicht (0x42b6cf)
-      bool other = false;
-      if (m.user != 0 && m.user != f.id) { const int ui = FindById(m.user); other = ui >= 0 && spawned[static_cast<size_t>(ui)].fr_state == 2 && spawned[static_cast<size_t>(ui)].fr_moon == f.fr_moon; }
-      const float hold = m.radius + 100.0f + (other ? 30.0f : 0.0f);   // Strahlreichweite 120 (gminebm) minus Spielraum
-      if (dl > hold + 15.0f || other) {
+      // MINE handler 0x42b430 (VERIFIED, see docs/formats/economy.md): range = range of the mining beam weapon (gminebm, 120). With the surface gap G = distance - craft radius - moon radius:
+      //  G > range - 15 (0x5ca8a8): fly towards the moon to the point at distance (craft radius + moon radius) on the line moon -> craft (0x42e4a0);
+      //  otherwise circle the moon (0x42dc30) at R = sqrt(range^2 - h^2) - 10 (h = height of the combat plane above the moon, 0x5ca6b8), 30 further out (0x5ca8a0) while another freighter is the
+      //  moon's user (0x453550: the user is set when a beam hits and released when the user is full), and fire the beam at the moon's centre (0x4582f0).
+      const float range = MineBeamRange();
+      const float rc = RadiusOf(f), rm = m.radius;
+      float dv[3];
+      for (int k = 0; k < 3; ++k) dv[k] = f.st.pos[k] - m.pos[k];
+      const float D3 = std::max(1e-3f, std::sqrt(dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]));
+      const float gap = D3 - rc - rm;
+      if (range - 15.0f < gap) {
         f.fr_state = 1;
-        f.fr_timer = 0;
-        const float tg[3] = {m.pos[0] + dx / dl * hold, 0.0f, m.pos[2] + dz / dl * hold};
+        if (f.orbit_cap && f.hv.ok) { f.hv.st.SetSpeedCap(f.orbit_saved_cap); f.orbit_cap = false; }
+        const float tg[3] = {m.pos[0] + dv[0] / D3 * (rc + rm), 0.0f, m.pos[2] + dv[2] / D3 * (rc + rm)};
         go(tg);
         continue;
       }
-      f.fr_state = 2;
-      f.fr_timer += dt;
-      while (f.fr_timer >= 1.5f && f.cargo < f.cargo_max - 0.01f) {  // shotDelay des Strahls; Treffer: 0x4e0900
-        f.fr_timer -= 1.5f;
-        const bool inf = infinite_moons || m.infinite;
-        // Menge = min(Strahlschaden 15, freier Laderaum, Vorrat des Mondes); der Mond merkt sich den Frachter als Nutzer
-        const float take = std::min(std::min(15.0f, f.cargo_max - f.cargo), inf ? 1e30f : m.amount);
-        f.cargo += take;
-        if (!inf) m.amount -= take;
-        m.user = f.id;
-        if (take <= 0) break;
+      bool other = false;
+      if (m.user != 0 && m.user != f.id) other = FindById(m.user) >= 0;
+      const float h = 0.0f - m.pos[1];
+      float R = std::sqrt(std::max(0.0f, range * range - h * h)) - 10.0f;
+      if (other) R += 30.0f;
+      {  // 0x42dc30: target point on the circle, 45 degrees (0x5fbc10 = pi/4) behind the craft's current angle; the original's z is the negated GL z
+        const float dxo = m.pos[0] - f.st.pos[0], dzo = f.st.pos[2] - m.pos[2];
+        const float phi = std::atan2(dzo, dxo) + 3.14159265f - 0.78539753f;
+        float tg[3] = {m.pos[0] + R * std::cos(phi), 0.0f, m.pos[2] - R * std::sin(phi)};
+        // The original does not go to this point but steers along the direction craft -> point (0x42f740 gets that unit vector x 10), so it never stops "too close to turn";
+        // the client's flight model stops near its target, so the point is pushed out along the same direction.
+        {
+          const float ex = tg[0] - f.st.pos[0], ez = tg[2] - f.st.pos[2], el = std::max(1e-3f, std::hypot(ex, ez));
+          const float far = 100.0f;
+          if (el < far) { tg[0] = f.st.pos[0] + ex / el * far; tg[2] = f.st.pos[2] + ez / el * far; }
+        }
+        if (CanFly(f)) { f.auto_move = 0; SetShipTarget(&f.st, tg); }
+        if (f.hv.ok && !f.orbit_cap) { f.orbit_saved_cap = f.hv.st.cap_speed; f.hv.st.SetSpeedCap(10.0f); f.orbit_cap = true; }
       }
+      f.fr_state = other ? 1 : 2;
+      f.fr_timer = std::min(1.5f, f.fr_timer + dt);   // shotDelay of gminebm (crewAffectsWeaponDelay 0)
+      if (other || f.fr_timer < 1.5f) continue;
+      // Weapon::Process: the hardpoint of the slot nearest to the target that reaches it (hardpoint -> moon centre <= range) fires one beam
+      float best_d2 = range * range;
+      bool fired = false;
+      float hpw[3] = {0, 0, 0};
+      for (const char* hn : {"hp01", "hp02", "hp03", "hp10"}) {
+        float pp[3], dd[3];
+        if (!HardpointWorld(f, hn, pp, dd)) continue;
+        const float d2 = (m.pos[0] - pp[0]) * (m.pos[0] - pp[0]) + (m.pos[1] - pp[1]) * (m.pos[1] - pp[1]) + (m.pos[2] - pp[2]) * (m.pos[2] - pp[2]);
+        if (d2 <= best_d2) { best_d2 = d2; fired = true; for (int k = 0; k < 3; ++k) hpw[k] = pp[k]; }
+      }
+      if (!fired) continue;
+      f.fr_timer = 0;
+      const bool inf = infinite_moons || m.infinite;
+      // MiningBeam hit 0x4e0900: take = min(free cargo, moon health, damageBase 15); the freighter becomes the moon's user
+      const float take = std::min(std::min(15.0f, room), inf ? 1e30f : m.amount);
+      f.cargo += take;
+      if (!inf) m.amount -= take;
+      m.user = f.id;
+      OreBeam ob;
+      ob.owner = f.id;
+      ob.moon = f.fr_moon;
+      ob.life = 1.25f;   // lifeSpan of the minebm ordnance
+      ore_beams.push_back(ob);
     }
+  }
+
+  // Mining beam shots (ordnance class minebm: model wmbeam.sod, lifeSpan 1.25, radiusScale 2.5, lengthScale 5; 0x4e0a20 follows the hardpoint and the moon's centre every frame)
+  struct OreBeam { unsigned owner = 0; int moon = -1; float age = 0, life = 1.25f; };
+  std::vector<OreBeam> ore_beams;
+  float MineBeamRange() {
+    float r = 120.0f;
+    if (odf_lib) if (const OdfObject* o = odf_lib->Get("gminebm.odf")) o->GetFloat("range", &r);
+    return r;
   }
 
   // ---- Computerspieler (docs/formats/ai.md) ----
@@ -4708,6 +4760,7 @@ struct Game::Impl {
         h.shield = sp.hp.shield_frac();
         h.hull = sp.hp.crew_frac();
         if (sp.bq.active) h.construction = sp.bq.Progress();
+        if (sp.freighter && sp.cargo_max > 0) h.cargo = std::max(0.0f, std::min(1.0f, sp.cargo / sp.cargo_max));
         st.ships.push_back(h);
       }
       if (st.ships.empty() && moon_sel >= 0 && moon_sel < static_cast<int>(moons.size())) {  // Dilithiummond im Infofeld
@@ -5252,12 +5305,15 @@ void Game::OnFrame(double dt) {
       ShipMatrices(sp.st, sp.scale, &m, &r);
       const float* c = kMapTeamColors[sp.team >= 0 && sp.team < 9 ? sp.team : 0];
       ModelRenderer* mr = sp.docked_id != 0 && it->second.r_ore ? it->second.r_ore.get() : it->second.r.get();
+      if (sp.docked_id != 0 && it->second.r_ore) mr->SetRingAngle(static_cast<float>(std::fmod(s.clock / 2.7, 1.0) * 6.2831853));
       // cloaked ships: enemies of the human player see nothing once fully cloaked, own ships stay visible but see-through (ASSUMED look, the original drawing was not read)
       if (sp.cloak > 0.0f && sp.team != s.human_team && sp.cloak >= 0.99f) continue;
+      if (sp.freighter && sp.cargo_max > 0) mr->SetOreFill(100.0f * sp.cargo / sp.cargo_max);   // ore display of the freighter model (0x4583e0)
       mr->SetOpacity(sp.cloak > 0.0f ? (sp.team == s.human_team ? 1.0f - 0.65f * sp.cloak : 1.0f - sp.cloak) : 1.0f);
       mr->SetTeamColor(c[0], c[1], c[2]);
       mr->Draw(proj * view * m, rot * r, &m);
       mr->SetOpacity(1.0f);
+      mr->SetOreFill(-1.0f);
       if (it->second.sp && !(sp.cloak > 0.0f)) it->second.sp->Draw(proj, view * m, s.clock);
     }
     if (s.map_loaded && s.map.bounds[1] > s.map.bounds[0] && s.map.bounds[5] > s.map.bounds[4]) {  // Einzelne Sterne zwischen Spielebene und Hintergrund: Tiefenwirkung beim Verschieben (Nutzerwunsch)
@@ -5361,18 +5417,52 @@ void Game::OnFrame(double dt) {
               if (sl > 1e-4f) {
                 const float w = 0.5f * beam_w / sl;   // width weldingBeamWidth as in the original (no zoom compensation)
                 for (float& q : sd) q *= w;
+                // weapon.spr: weldbeam 128 x 32, @anim=tex1x4 = one column of 4 frames (rows); u runs along the beam, v selects the frame (the earlier version used columns and showed 4 stripes)
                 const int frame = static_cast<int>(s.clock * 10.0) & 3;
-                const float u0 = frame * 0.25f, u1 = u0 + 0.25f;
+                const float v0 = frame * 0.25f, v1 = v0 + 0.25f;
                 const float P0[3] = {b.pos[0] - sd[0], b.pos[1] - sd[1], b.pos[2] - sd[2]}, P1[3] = {b.pos[0] + sd[0], b.pos[1] + sd[1], b.pos[2] + sd[2]};
                 const float Q0[3] = {b.weld[0] - sd[0], b.weld[1] - sd[1], b.weld[2] - sd[2]}, Q1[3] = {b.weld[0] + sd[0], b.weld[1] + sd[1], b.weld[2] + sd[2]};
-                std::vector<float> mesh = {P0[0], P0[1], P0[2], u0, 0, Q0[0], Q0[1], Q0[2], u1, 0, Q1[0], Q1[1], Q1[2], u1, 1,
-                                           P0[0], P0[1], P0[2], u0, 0, Q1[0], Q1[1], Q1[2], u1, 1, P1[0], P1[1], P1[2], u0, 1};
+                std::vector<float> mesh = {P0[0], P0[1], P0[2], 0, v0, Q0[0], Q0[1], Q0[2], 1, v0, Q1[0], Q1[1], Q1[2], 1, v1,
+                                           P0[0], P0[1], P0[2], 0, v0, Q1[0], Q1[1], Q1[2], 1, v1, P1[0], P1[1], P1[2], 0, v1};
                 const float tint[3] = {1.0f, 1.0f, 1.0f};
                 s.effects.DrawMesh(proj, view, mesh, "weldbeam", tint, 1.0f, *s.source);
               }
             }
           }
         }
+      }
+    }
+    if (!s.ore_beams.empty() && s.EnsureSpawnModel("wmbeam")) {  // mining beams: model wmbeam.sod from the freighter's hardpoint to the moon's centre, scale (2.5, 2.5, d / 5) (0x4e0850)
+      Impl::SpawnModel& wb = s.spawn_models["wmbeam"];
+      wb.r->SetForceAdditive(true);
+      for (const Impl::OreBeam& ob : s.ore_beams) {
+        const int oi = s.FindById(ob.owner);
+        if (oi < 0 || ob.moon < 0 || ob.moon >= static_cast<int>(s.moons.size())) continue;
+        const Impl::Spawned& fr = s.spawned[static_cast<size_t>(oi)];
+        const Impl::Moon& mo = s.moons[static_cast<size_t>(ob.moon)];
+        float start[3] = {fr.st.pos[0], fr.st.pos[1], fr.st.pos[2]}, dd[3], bd2 = 3.0e38f;
+        for (const char* hn : {"hp01", "hp02", "hp03", "hp10"}) {
+          float pp[3];
+          if (!s.HardpointWorld(fr, hn, pp, dd)) continue;
+          const float d2 = (mo.pos[0] - pp[0]) * (mo.pos[0] - pp[0]) + (mo.pos[1] - pp[1]) * (mo.pos[1] - pp[1]) + (mo.pos[2] - pp[2]) * (mo.pos[2] - pp[2]);
+          if (d2 < bd2) { bd2 = d2; for (int k = 0; k < 3; ++k) start[k] = pp[k]; }
+        }
+        float dir[3] = {mo.pos[0] - start[0], mo.pos[1] - start[1], mo.pos[2] - start[2]};
+        const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        if (len < 1e-3f) continue;
+        for (float& q : dir) q /= len;
+        ShipState bs;
+        for (int k = 0; k < 3; ++k) { bs.pos[k] = start[k]; bs.b_front[k] = dir[k]; }
+        if (std::fabs(dir[1]) > 0.98f) { bs.b_up[0] = 0; bs.b_up[1] = 0; bs.b_up[2] = 1; } else { bs.b_up[0] = -dir[0] * dir[1]; bs.b_up[1] = 1.0f - dir[1] * dir[1]; bs.b_up[2] = -dir[2] * dir[1]; const float ul = std::sqrt(bs.b_up[0] * bs.b_up[0] + bs.b_up[1] * bs.b_up[1] + bs.b_up[2] * bs.b_up[2]); for (float& q : bs.b_up) q /= ul; }
+        bs.has_basis = true;
+        Mat4 bm, br;
+        ShipMatrices(bs, 1.0f, &bm, &br);
+        for (int i : {0, 1, 2, 4, 5, 6}) bm.m[i] *= 2.5f;      // radiusScale
+        for (int i : {8, 9, 10}) bm.m[i] *= len / 5.0f;         // lengthScale
+        bm.m[12] = start[0]; bm.m[13] = start[1]; bm.m[14] = start[2];
+        bm.m[3] = bm.m[7] = bm.m[11] = 0.0f; bm.m[15] = 1.0f;
+        wb.r->SetBeamRoll(static_cast<float>(std::fmod(s.clock / 3.3333333, 1.0) * 6.2831853));
+        wb.r->Draw(proj * view * bm, rot * br, &bm);
       }
     }
     for (const Impl::Fireball& f : s.fireballs) {
@@ -5926,6 +6016,13 @@ std::string Game::DebugHumanBuild(const std::string& odf, int item) {
   return out;
 }
 
+void Game::DebugFocus(float x, float z, float dist) {
+  Impl& s = *impl_;
+  s.map_target[0] = x; s.map_target[1] = 0; s.map_target[2] = z;
+  s.zoom = 1.0f;
+  s.map_dist = dist;
+}
+
 std::string Game::DebugOrder(const std::string& kind) {
   Impl& s = *impl_;
   int n = 0;
@@ -6035,7 +6132,7 @@ std::string Game::DebugReport() const {
             out += buf;
           }
       }
-    for (const Impl::Moon& m : s.moons) { std::snprintf(buf, sizeof buf, "  moon %s (%.0f,%.0f) r %.0f amount %.0f inf %d\n", m.name.c_str(), m.pos[0], m.pos[2], m.radius, m.amount, m.infinite ? 1 : 0); if (t == 1) out += buf; }
+    for (const Impl::Moon& m : s.moons) { std::snprintf(buf, sizeof buf, "  moon %s (%.0f,y%.0f,%.0f) r %.0f amount %.0f inf %d\n", m.name.c_str(), m.pos[0], m.pos[1], m.pos[2], m.radius, m.amount, m.infinite ? 1 : 0); if (t == 1) out += buf; }
     const TeamResources& r = s.team_res[t];
     std::snprintf(buf, sizeof buf, "team %d: dil %.0f crew %.0f off %d | stations %d freighters %d warships %d other %d\n", t, r.dilithium, r.crew, r.officers, stations, freighters, armed, ships);
     out += buf;

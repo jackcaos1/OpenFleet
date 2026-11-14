@@ -82,7 +82,8 @@ class Game {
   std::string DebugReport() const;
   // Menue-Weg des Spielers nachstellen: Objekt des eigenen Teams mit dieser ODF waehlen, Bauen-Seite oeffnen, Eintrag antippen; Rueckgabe: kurzer Befund
   std::string DebugHumanBuild(const std::string& odf, int item);
-  std::string DebugOrder(const std::string& kind);  // headless test: scout / hunt / patrol / guard for all human ships
+  std::string DebugOrder(const std::string& kind);
+  void DebugFocus(float x, float z, float dist);   // test: camera on a map point (screenshots in headless runs)  // headless test: scout / hunt / patrol / guard for all human ships
 
 
   // Spielstand im Originalformat (nicht im Mehrspieler). SaveState: false, wenn gerade nichts zu speichern ist (Menue).

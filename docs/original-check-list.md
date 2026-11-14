@@ -104,3 +104,8 @@ Still assumed: how a cloaked ship is hidden (rule not found), see-through look, 
 - Weapons: one beam per weapon slot every shotDelay (the hardpoint nearest to the target), not all hardpoints at once? Do phasers fire at targets behind the ship? Range measured from the hardpoint to the target centre?
 - Construction: do small sparks run along the edges of the new triangles? How big, how fast?
 - Mining: a case where a freighter does nothing (the client lets a freighter wait while another one uses the same moon; was this the case?).
+
+## Build 113
+- Mining: does the freighter fly straight to the moon, then circle it slowly (about 10 m/s) at a small radius and fire one beam every 1.5 s at the moon's centre? Does the beam look like two counter-rotating helices?
+- Info panel: cargo bar of a freighter in the energy bar's place? Ore chunks on the freighter model appear in ten steps (10 %, 20 %, ...)?
+- Mining station: ore ring transparent and turning while a freighter is docked? Anything else animated at the station?

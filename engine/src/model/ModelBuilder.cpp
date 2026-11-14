@@ -177,6 +177,14 @@ void BuildModel(const Sod& sod, const std::string& name, Model* out, BuildOption
     if (!hide) out->sprite_nodes.push_back(sn);
   }
 
+  {
+    const auto it = by_name.find("oreglow");
+    if (it != by_name.end()) {
+      out->ore_pivot[0] = world[it->second].pos[0];
+      out->ore_pivot[1] = world[it->second].pos[1];
+      out->ore_pivot[2] = -world[it->second].pos[2];
+    }
+  }
   // Erster Durchlauf: Batches mit Weltpositionen und Rohdreiecken.
   std::vector<std::vector<uint32_t>> batch_vpos;   // je Batch und Eckpunkt: Positionsindex im Mesh (Normalen werden je Position ueber alle Gruppen summiert)
   std::vector<size_t> batch_node;
@@ -220,6 +228,7 @@ void BuildModel(const Sod& sod, const std::string& name, Model* out, BuildOption
       const std::string lm = ToLowerAscii(g.material);
       b.team = StartsWith(lm, "team") && lm != "team_bglow";
       b.cutout = borg_overlay;
+      if (AncestorFlags(sod, by_name, ni).ore) { b.ore_ring = true; b.additive = true; }
 
       std::map<std::pair<uint16_t, uint16_t>, uint32_t> unique;
       std::vector<uint32_t> vpos;

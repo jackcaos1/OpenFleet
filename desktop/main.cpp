@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
   std::string human_build;  // "<odf>:<index>"
   int max_frames = -1;
   std::string screenshot;
+  double shot_at = -1, shot_x = 0, shot_z = 0, shot_dist = 600;  // headless: --shot-at <s> --shot-focus x,z,dist --screenshot out.ppm
   std::string data_dir;
   std::string model_name;
   if (const char* env = std::getenv("FLEET_GAME_DIR")) data_dir = env;
@@ -76,6 +77,10 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) {
       max_frames = std::atoi(argv[++i]);
+    } else if (!std::strcmp(argv[i], "--shot-at") && i + 1 < argc) {
+      shot_at = std::atof(argv[++i]);
+    } else if (!std::strcmp(argv[i], "--shot-focus") && i + 1 < argc) {
+      std::sscanf(argv[++i], "%lf,%lf,%lf", &shot_x, &shot_z, &shot_dist);
     } else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) {
       screenshot = argv[++i];
     } else if (!std::strcmp(argv[i], "--autostart") && i + 1 < argc) {
@@ -174,6 +179,12 @@ int main(int argc, char** argv) {
             human_order.clear();
           }
           if (sim_t >= next_report) { std::fprintf(stderr, "--- t=%.0f s\n%s", sim_t, game.DebugReport().c_str()); next_report += 30.0; }
+          if (shot_at >= 0 && sim_t >= shot_at && !screenshot.empty()) {
+            game.DebugFocus(static_cast<float>(shot_x), static_cast<float>(shot_z), static_cast<float>(shot_dist));
+            game.OnFrame(0.0);
+            WritePpm(screenshot, width, height);
+            shot_at = -1;
+          }
           if (sim_t >= sim_seconds) running = false;
           SDL_GL_SwapWindow(window);
           continue;

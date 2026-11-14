@@ -263,6 +263,8 @@ void DrawShips(Builder& b, const GuiCfg& c, const std::vector<HudShip>& ships, f
     if (R("infoSingleShieldBarArea", a)) { StateRgb(sh.shield, &r, &g, &bl); b.SpriteBar("large_shield_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.shield, r, g, bl); }
     if (sh.construction >= 0 && R("infoSingleConstructionBarArea", a)) {
       b.SpriteBar("large_construction_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.construction, 1.0f, 0.6f, 0.2f);
+    } else if (sh.cargo >= 0 && R("infoSingleDilithiumBarArea", a)) {
+      b.SpriteBar("large_dilithium_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.cargo, 0.0f, 0.5f, 1.0f);
     } else if (R("infoSingleEnergyBarArea", a)) {
       if (sh.energy >= 0) b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, sh.energy, 1, 1, 0);
       else b.SpriteBar("large_energy_bar", ix + a[0] * s, iy + a[1] * s, a[2] * s, a[3] * s, 1, 0.3f, 0.3f, 0.3f);

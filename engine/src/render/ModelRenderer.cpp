@@ -1,6 +1,7 @@
 #include "render/ModelRenderer.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 #include "core/Log.h"
@@ -246,10 +247,17 @@ GLuint ModelRenderer::LoadTexture(const std::string& name, FileSource& src, bool
 ModelLoadStats ModelRenderer::SetModel(const Model& model, FileSource& src) {
   ModelLoadStats stats;
   ClearModel();
+  for (int k = 0; k < 3; ++k) ring_pivot_[k] = model.ore_pivot[k];
   for (const ModelBatch& mb : model.batches) {
     GpuBatch b;
     b.index_count = static_cast<GLsizei>(mb.indices.size());
     b.cull_back = mb.cull_back;
+    b.ring = mb.ore_ring;
+    {
+      std::string nl = ToLowerAscii(mb.node);
+      if (nl == "outerbeam") b.roll_sign = 1; else if (nl == "beam") b.roll_sign = -1;
+      if (nl.size() > 3 && nl.compare(0, 3, "ore") == 0 && nl.find_first_not_of("0123456789", 3) == std::string::npos) b.ore_n = std::atoi(nl.c_str() + 3);
+    }
     b.additive = mb.additive;
     for (int i = 0; i < 3; ++i) { b.color[i] = mb.color[i]; b.ambient[i] = mb.ambient[i]; b.specular[i] = mb.specular[i]; }
     b.power = mb.power;
@@ -364,6 +372,7 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
       const bool transparent = alpha_mode_ == 2 && b.has_alpha && !b.cutout;
       const int my_pass = (b.additive || force_additive_) ? 2 : (transparent ? 1 : 0);
       if (my_pass != pass) continue;
+      if (ore_fill_ >= 0.0f && b.ore_n > 0 && static_cast<float>(b.ore_n * 10) > ore_fill_) continue;   // 0x4583e0: not yet filled
       if (b.cull_back) {
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
@@ -377,11 +386,21 @@ void ModelRenderer::Draw(const Mat4& mvp, const Mat4& normal_rot, const Mat4* wo
       glUniform1f(u_unlit_, b.unlit ? 1.0f : 0.0f);
       static const float kWhite3[3] = {1, 1, 1};
       // Beleuchtet: Diffusfarbe geht ueber das Szenenlicht ein; unbeleuchtet (Lichtmodell 0) und ohne Szenenlicht wie bisher als Farbe
-      glUniform3fv(u_color_, 1, b.team ? team_ : ((use_light && !b.unlit) ? kWhite3 : b.color));
+      static const float kOre[3] = {0.0f, 0.6f, 1.0f};
+      glUniform3fv(u_color_, 1, (ore_fill_ >= 0.0f && b.ore_n > 0) ? kOre : (b.team ? team_ : ((use_light && !b.unlit) ? kWhite3 : b.color)));
       glUniform3fv(u_mamb_, 1, b.ambient);
       glUniform3fv(u_mdiff_, 1, b.color);
       glUniform3fv(u_mspec_, 1, b.specular);
       glUniform1f(u_mpow_, (b.lighting == 2 && !b.team) ? std::max(b.power, 1.0f) : 0.0f);
+      if (b.ring && ring_angle_ != 0.0f) {
+        const Mat4 rg = mvp * Mat4::Translation(ring_pivot_[0], ring_pivot_[1], ring_pivot_[2]) * Mat4::RotationY(ring_angle_) * Mat4::Translation(-ring_pivot_[0], -ring_pivot_[1], -ring_pivot_[2]);
+        glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, rg.m);
+      } else if (b.roll_sign != 0 && beam_roll_ != 0.0f) {
+        const Mat4 rz = mvp * Mat4::RotationZ(b.roll_sign * beam_roll_);
+        glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, rz.m);
+      } else {
+        glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, mvp.m);
+      }
       glBindVertexArray(b.vao);
       if (draw_count[bi] > 0) glDrawElements(GL_TRIANGLES, draw_count[bi], GL_UNSIGNED_INT, nullptr);
     }

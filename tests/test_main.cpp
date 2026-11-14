@@ -33,6 +33,7 @@
 #include "game/Skirmish.h"
 #include "game/Economy.h"
 #include "game/Shroud.h"
+#include "game/Specials.h"
 #include "game/Ai.h"
 #include "formats/LabelMap.h"
 #include "io/ZipSource.h"
@@ -1678,6 +1679,44 @@ static void TestNoPathStops() {
 }
 
 
+static void TestSpecials() {
+  using namespace fleet;
+  SpecialEnergy e;
+  e.max = 1000; e.cur = 1000; e.rate = 10;
+  SpecialRt regen;
+  regen.def.kind = SpecialKind::Regeneration;
+  regen.def.energy_cost = 80; regen.def.regen_modifier = 30;
+  CHECK(SpecialPress(&regen, &e) && regen.active);
+  SpecialResult r = SpecialUpdate(&regen, &e, 1.0f, 100.0f, 500.0f);
+  CHECK(r.shield_add == 30.0f && e.cur == 920.0f && regen.active);
+  r = SpecialUpdate(&regen, &e, 1.0f, 480.0f, 500.0f);   // shield 480 + 30 > max: full, switches off
+  CHECK(!regen.active);
+  e.cur = 50;
+  CHECK(!SpecialPress(&regen, &e) && !regen.active);       // not enough energy
+  // Cloak: one-time cost, fades in over effectTimer, press again fades out
+  SpecialRt cl;
+  cl.def.kind = SpecialKind::Cloak; cl.def.energy_cost = 100; cl.def.effect_timer = 3.0f;
+  e.cur = 500;
+  CHECK(SpecialPress(&cl, &e) && e.cur == 400.0f);
+  SpecialUpdate(&cl, &e, 1.5f, 0, 0);
+  CHECK(std::fabs(CloakAmount(cl) - 0.5f) < 1e-4f);
+  SpecialUpdate(&cl, &e, 5.0f, 0, 0);
+  CHECK(CloakAmount(cl) == 1.0f && e.cur == 400.0f);
+  CHECK(SpecialPress(&cl, &e) && !cl.active);
+  SpecialUpdate(&cl, &e, 3.0f, 0, 0);
+  CHECK(CloakAmount(cl) == 0.0f);
+  // Self destruct: countdown, cancel with a second press, fires at zero
+  SpecialRt sd;
+  sd.def.kind = SpecialKind::SelfDestruct; sd.def.timer = 5.0f;
+  CHECK(SpecialPress(&sd, &e) && sd.active);
+  SpecialUpdate(&sd, &e, 2.0f, 0, 0);
+  CHECK(sd.active && !sd.fired);
+  CHECK(SpecialPress(&sd, &e) && !sd.active);
+  CHECK(SpecialPress(&sd, &e) && sd.timer == 5.0f);
+  SpecialUpdate(&sd, &e, 5.5f, 0, 0);
+  CHECK(sd.fired && !sd.active);
+}
+
 static void TestShroud() {
   using namespace fleet;
   Shroud sh;
@@ -1996,6 +2035,7 @@ int main() {
   TestSkirmish();
   TestEconomy();
   TestShroud();
+  TestSpecials();
   TestAi();
   TestMenuLayout();
   TestSaveGame();

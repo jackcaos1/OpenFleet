@@ -26,6 +26,7 @@
 #include "game/HoverShip.h"
 #include "game/PathGrid.h"
 #include "game/Shroud.h"
+#include "game/Specials.h"
 #include "game/ShipSim.h"
 #include "render/HudRenderer.h"
 #include "formats/ZfsSource.h"
@@ -386,6 +387,9 @@ struct Game::Impl {
     float transfer_rate = 0, dock_buffer = 0;
     // Befehle (CraftProcess-Auftragstypen, docs/formats/orders.md): Wache 26, Erkunden 27, Patrouille 29, Suchen und Zerstoeren (HUNT) 25
     enum Ord { kOrdNone = 0, kOrdGuard, kOrdPatrol, kOrdScout, kOrdHunt };
+    SpecialEnergy energy;                   // maxSpecialEnergy / specialEnergyRate (Spezialwaffen)
+    std::vector<SpecialRt> sprt;            // Zustand der Spezialwaffen, parallel zu specials
+    float cloak = 0;                        // 0..1, 1 = getarnt
     int order = kOrdNone;
     unsigned ord_target = 0;                // Wache: Schutzobjekt (+0x7c)
     float ord_p0[3] = {0, 0, 0}, ord_p1[3] = {0, 0, 0};  // Patrouille: Start und Ziel; Erkunden: Startposition (+0x90) / aktuelles Ziel (+0x9c)
@@ -1523,6 +1527,9 @@ struct Game::Impl {
       if (wo.size() >= 6 && wo.find("minebm") != std::string::npos) s->freighter = true;
     }
     s->has_energy = u.max_special_energy > 0;
+    s->energy.max = u.max_special_energy;
+    s->energy.rate = u.special_energy_rate;
+    s->energy.cur = u.max_special_energy;   // ANNAHME: Start mit vollem Speicher
     s->hero = u.is_hero;
     s->cls = u.class_label.empty() ? std::string("?") : u.class_label;
     s->odf_l = ToLowerAscii(odf);
@@ -1609,7 +1616,12 @@ struct Game::Impl {
       if (LoadWeaponDef(*odf_lib, w.odf, &wd) && wd.special) {
         bool dup = false;
         for (const auto& sp : s->specials) dup = dup || sp.first == w.odf;
-        if (!dup && s->specials.size() < 6) s->specials.push_back({w.odf, wd.name.empty() ? w.odf : wd.name});
+        if (!dup && s->specials.size() < 6) {
+          s->specials.push_back({w.odf, wd.name.empty() ? w.odf : wd.name});
+          SpecialRt rt;
+          LoadSpecialDef(*odf_lib, w.odf, &rt.def);
+          s->sprt.push_back(rt);
+        }
       }
     }
     PhysicsDef pd;
@@ -1825,7 +1837,7 @@ struct Game::Impl {
   // Original 0x42faa0: relation check, then a derelict target is refused unless the attacker's player slot is flagged as AI (+0xa8, set by
   // SetIsAITeam). So computer players still shoot at derelict enemies, the human player's weapons never target them.
   bool Hostile(const Spawned& a, const Spawned& b) const {
-    return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && (!b.derelict || a.team != human_team);
+    return a.team > 0 && b.team > 0 && IsEnemyTeam(a.team, b.team) && b.hp.alive() && (!b.derelict || a.team != human_team) && b.cloak < 1.0f;
   }
 
   static float Dist3(const float a[3], const float b[3]) {
@@ -1937,6 +1949,28 @@ struct Game::Impl {
     return best;
   }
 
+
+
+  // Spezialwaffen als Zustandsautomaten (game/Specials.h, docs/formats/specials.md)
+  void StepSpecials(Spawned& s, float dt) {
+    if (s.derelict || !s.hp.alive()) return;
+    s.energy.Add(s.energy.rate * dt);
+    float cloak = 0;
+    for (SpecialRt& r : s.sprt) {
+      const SpecialResult res = SpecialUpdate(&r, &s.energy, dt, s.hp.shield, s.hp.shield_max);
+      if (res.shield_add > 0) s.hp.shield = std::min(s.hp.shield_max, s.hp.shield + res.shield_add);
+      if (r.def.kind == SpecialKind::Cloak) cloak = std::max(cloak, CloakAmount(r));
+      if (r.def.kind == SpecialKind::SelfDestruct) {
+        s.hp.self_destruct = r.active;
+        if (r.fired) { r.fired = false; s.hp.exploded = true; }
+      }
+    }
+    s.cloak = cloak;
+  }
+  bool PressSpecial(Spawned& s, size_t i) {
+    if (i >= s.sprt.size()) return false;
+    return SpecialPress(&s.sprt[i], &s.energy);
+  }
 
   // ---- Befehle: Wache, Patrouille, Erkunden, Suchen und Zerstoeren (docs/formats/orders.md) ----
   // Originalhandler je Auftragstyp (CraftProcess, Tabelle 0x42813c): GUARD 0x428690, SCOUT 0x42b870, HUNT 0x42bb20. Zielwahl FindTarget 0x42ff80:
@@ -2105,6 +2139,7 @@ struct Game::Impl {
       if (!s.hp.derelict && s.derelict) s.derelict = false;  // wieder bemannt (Beamen)
       if (s.beam_timer > 0) s.beam_timer -= dt;             // Original 0x46708a: zaehlt nur, solange er ueber 0 ist
       if (s.beam_id && s.beam_timer <= 0 && !s.derelict) DoBeam(s);
+      StepSpecials(s, dt);
     }
     StepParties(dt);
     for (size_t i = 0; i < spawned.size(); ++i) {
@@ -4223,16 +4258,23 @@ struct Game::Impl {
       if (sp.has_selfdestruct) st->control[10] = cmd(UiAction::SelfDestruct, "b_gselfdes", "Selbstzerst.", live);   // 0x4633d1: nur mit Waffe gselfdes
       st->control[11] = cmd(UiAction::Back, "b_back", "Zurueck", true);
     }
+    const bool live_special = !sp.derelict && sp.team == human_team && sp.hp.alive();
     for (size_t i = 0; i < sp.bq.items.size() && i < 6; ++i) {  // Warteschlange: der erste Eintrag wird gebaut
       char lab[16];
       std::snprintf(lab, sizeof lab, i == 0 && sp.bq.active ? "%d%%" : "...", static_cast<int>(sp.bq.Progress() * 100.0f));
       st->rail[i] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Queue0) + static_cast<int>(i)), ("b_" + sp.bq.items[i].odf).c_str(), lab, true, i == 0 && sp.bq.active);
       if (i == 0 && sp.bq.active) st->rail[i].progress = sp.bq.Progress();
     }
+    // Waffen mit special und buttonSlot > 0 liegen auf dem Platz buttonSlot der Leiste (Craft-Tabelle +0x350); Platz 0 bleibt frei (Befehl 1, unbekannt)
     for (size_t i = 0; i < sp.specials.size() && i < 6 && sp.bq.items.empty(); ++i) {
       std::string lab = sp.specials[i].second;
       if (lab.size() > 8) lab.resize(8);
-      st->rail[i] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Special0) + static_cast<int>(i)), ("b_" + sp.specials[i].first).c_str(), lab.c_str(), true);
+      const SpecialRt* rt = i < sp.sprt.size() ? &sp.sprt[i] : nullptr;
+      const int slot = rt ? rt->def.button_slot : 0;
+      if (slot < 1 || slot > 5) continue;
+      const bool supported = rt && rt->def.kind != SpecialKind::Unsupported;
+      const bool can = live_special && supported && (rt->active || rt->def.kind == SpecialKind::SelfDestruct || sp.energy.cur >= rt->def.energy_cost);
+      st->rail[static_cast<size_t>(slot)] = cmd(static_cast<UiAction>(static_cast<int>(UiAction::Special0) + static_cast<int>(i)), ("b_" + sp.specials[i].first).c_str(), lab.c_str(), can, rt && rt->active);
     }
   }
 
@@ -4257,12 +4299,14 @@ struct Game::Impl {
         h.wire = ToLowerAscii(sp.odf);
         if (sp.bq.active) { std::snprintf(buf, sizeof buf, "Bau %d%% (%d)", static_cast<int>(sp.bq.Progress() * 100.0f), static_cast<int>(sp.bq.Size())); h.status = buf; }
         else if (sp.st.speed > 1.0f) { std::snprintf(buf, sizeof buf, "%.0f m/s%s", sp.st.speed, sp.st.warp ? " WARP" : ""); h.status = buf; }
+        for (const SpecialRt& r : sp.sprt)
+          if (r.def.kind == SpecialKind::SelfDestruct && r.active) { std::snprintf(buf, sizeof buf, "Selbstzerst. %d", static_cast<int>(std::ceil(r.timer))); h.status = buf; }
         h.crew = static_cast<int>(sp.hp.crew + 0.5f);
         h.crew_max = static_cast<int>(sp.hp.crew_max + 0.5f);
         h.crew_state = sp.hp.crew_status() == 0 ? 1.0f : (sp.hp.crew_status() == 1 ? 0.5f : 0.0f);
         for (int k = 0; k < kSysCount; ++k) h.system[k] = sp.hp.sys_frac(k);
         h.officers = sp.officers;
-        h.energy = sp.has_energy ? 1.0f : -1.0f;
+        h.energy = sp.has_energy ? sp.energy.Frac() : -1.0f;
         h.shield = sp.hp.shield_frac();
         h.hull = sp.hp.crew_frac();
         if (sp.bq.active) h.construction = sp.bq.Progress();
@@ -4433,8 +4477,11 @@ struct Game::Impl {
         Message("Abwarten: schiesst nicht von selbst.");
         break;
       case UiAction::SelfDestruct:
+        // Original 0x508fc0: erster Druck startet den Countdown (timer), ein zweiter bricht ihn ab; danach Explosion (Schaden im Umkreis: nicht gelesen)
         for (Spawned& x : spawned)
-          if (CmdSel(x) && !x.derelict) x.hp.exploded = true;
+          if (CmdSel(x) && !x.derelict)
+            for (size_t k = 0; k < x.sprt.size(); ++k)
+              if (x.sprt[k].def.kind == SpecialKind::SelfDestruct && PressSpecial(x, k)) Message(x.sprt[k].active ? "Selbstzerstoerung eingeleitet." : "Selbstzerstoerung abgebrochen.");
         break;
       case UiAction::Back: cmd_page = CmdPage::Main; build_armed.clear(); ghost_set = false; break;
       case UiAction::BuildMenu: cmd_page = CmdPage::Build; break;
@@ -4464,7 +4511,12 @@ struct Game::Impl {
         if (selected >= 0 && selected < static_cast<int>(spawned.size())) {
           const size_t i = static_cast<size_t>(static_cast<int>(a) - static_cast<int>(UiAction::Special0));
           const Spawned& sp = spawned[static_cast<size_t>(selected)];
-          if (i < sp.specials.size()) Message(sp.specials[i].second + ": Spezialwaffen sind noch nicht umgesetzt.");
+          Spawned& spm = spawned[static_cast<size_t>(selected)];
+          if (i < sp.sprt.size() && sp.sprt[i].def.kind == SpecialKind::Unsupported) Message(sp.specials[i].second + ": noch nicht umgesetzt.");
+          else if (i < sp.sprt.size() && !sp.derelict && sp.team == human_team) {
+            const bool changed = PressSpecial(spm, i);
+            Message(changed ? sp.specials[i].second + (spm.sprt[i].active ? ": ein" : ": aus") : sp.specials[i].second + ": nicht genug Energie.");
+          }
         }
         break;
       case UiAction::Spawn: OpenMenu(MenuKind::Spawn); break;

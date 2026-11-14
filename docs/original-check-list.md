@@ -99,3 +99,8 @@ Still assumed: how a cloaked ship is hidden (rule not found), see-through look, 
 - Rig position: does the construction ship stop outside the structure on the side it came from (D = rig radius + structure radius + 10 from the centre)?
 - Station: appears triangle by triangle (no growing, no scaling)? Which order (mesh by mesh)? Any sparks at all?
 - Bees: do they face the station while welding, is the beam pointed at a point on the surface, how do they hover (sphere around the centre)?
+
+## Build 112
+- Weapons: one beam per weapon slot every shotDelay (the hardpoint nearest to the target), not all hardpoints at once? Do phasers fire at targets behind the ship? Range measured from the hardpoint to the target centre?
+- Construction: do small sparks run along the edges of the new triangles? How big, how fast?
+- Mining: a case where a freighter does nothing (the client lets a freighter wait while another one uses the same moon; was this the case?).

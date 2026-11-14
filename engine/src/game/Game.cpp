@@ -2274,17 +2274,27 @@ struct Game::Impl {
       for (WeaponRt& w : s.weapons) {
         w.timer -= dt;
         if (w.timer > 0) continue;
-        float dist = 0;
-        for (int k = 0; k < 3; ++k) dist += (t.st.pos[k] - s.st.pos[k]) * (t.st.pos[k] - s.st.pos[k]);
-        dist = std::sqrt(dist);
-        if (dist - tr > w.range) {
-          w.timer = 0;  // bereit, sobald das Ziel in Reichweite ist
-          continue;
-        }
-        w.timer = w.delay * s.hp.weapon_delay_mult();
+        // Weapon::Process (Armada.exe 0x509bd0), VERIFIED: a weapon slot has ONE weapon object with a list of hardpoints. Per shot the hardpoint that can hit and has the
+        // smallest squared distance to the target (0x50a520 with CanHit 0x50a290 and the metric 0x50a730) fires - ONE beam or projectile per shotDelay, not one per hardpoint.
+        // CanHit: squared distance from the HARDPOINT's world position to the target's position (+0x8c, its centre) <= range^2 (class +0xf8); no target radius, and a firing arc only for
+        // weapons with restrictFireArc (0x50a170, +-30 degrees around the ship's heading; in the shipped ODFs only the base pulse.odf sets it and its descendants clear it).
+        // Aim: normalize(target centre - hardpoint position) (0x50a7c0).
+        const ModelHardpoint* best_hp = nullptr;
+        float best_o[3] = {0, 0, 0}, best_d2 = 3.0e38f;
         for (const ModelHardpoint& hp : w.points) {
           float o[3];
           Xf(m, hp.pos, o);
+          const float d2 = (t.st.pos[0] - o[0]) * (t.st.pos[0] - o[0]) + (t.st.pos[1] - o[1]) * (t.st.pos[1] - o[1]) + (t.st.pos[2] - o[2]) * (t.st.pos[2] - o[2]);
+          if (d2 <= w.range * w.range && d2 < best_d2) { best_d2 = d2; best_hp = &hp; for (int k = 0; k < 3; ++k) best_o[k] = o[k]; }
+        }
+        if (!best_hp) {
+          w.timer = 0;  // ready as soon as a hardpoint can reach the target
+          continue;
+        }
+        w.timer = w.delay * s.hp.weapon_delay_mult();
+        for (int once = 0; once < 1; ++once) {
+          const ModelHardpoint& hp = *best_hp;
+          float o[3] = {best_o[0], best_o[1], best_o[2]};
           float d[3], dl = 0;
           for (int k = 0; k < 3; ++k) {
             d[k] = t.st.pos[k] - o[k];
@@ -2292,6 +2302,7 @@ struct Game::Impl {
           }
           dl = std::sqrt(dl);
           if (dl < 1e-3f) continue;
+          (void)hp;
           const bool hit = RollHit(&rng, w.hit.For(t.odf_l));
           HitInfo hi = w.hi;
           hi.damage = RollDamage(&rng, w.damage.For(t.odf_l), w.variance);
@@ -3386,9 +3397,16 @@ struct Game::Impl {
     float weld[3] = {0, 0, 0};     // weld point (+0x5c): a vertex of a revealed triangle
     float hover[3] = {0, 0, 0};    // hover point (+0x50): on the bounding sphere in the direction of the weld point
   };
+  // Spark on an edge of a newly revealed triangle (BuildingEffect 0x50d850 creates it for each new edge; 0x50c950 advances t by dt x weldingSpeed and deletes it above 1;
+  // 0x50caa0 draws sprite `weldingSpriteName` (default xspark, 0x60152c) at A + (B - A) t with size weldingRadius).
+  struct Spark { float a[3], b[3]; float t = 0; };
   struct BuildFx {
     std::vector<Bee> bees;
     bool init = false;
+    int prev_revealed = 0;
+    std::vector<Spark> sparks;
+    std::set<std::string> edges;   // already used edges (the original keeps a map keyed by the vertex pair)
+    float spark_speed = 1.0f, spark_anim = 4.0f, spark_radius = 1.0f;
   };
   std::map<unsigned, BuildFx> build_fx;
 
@@ -3450,6 +3468,34 @@ struct Game::Impl {
         fx.init = true;
         fx.bees.assign(static_cast<size_t>(nb), Bee());
         for (Bee& b : fx.bees) b.timer = takeoff;   // 0x519010: timer = timeUntilTakeoff
+      }
+      // edge sparks for the triangles revealed since the last frame
+      {
+        float sc = 1.0f;
+        const std::string sod = SodOfOdf(rig.bq.items.front().odf, &sc);
+        const SpawnModel& m = spawn_models[sod];
+        if (const OdfObject* bo = odf_lib ? odf_lib->Get(ToLowerAscii(rig.bq.items.front().odf)) : nullptr) {
+          bo->GetFloat("weldingSpeed", &fx.spark_speed);
+          bo->GetFloat("weldingAnimSpeed", &fx.spark_anim);
+          bo->GetFloat("weldingRadius", &fx.spark_radius);
+        }
+        for (int t = fx.prev_revealed; t < revealed && t < total; ++t) {
+          for (int c = 0; c < 3; ++c) {
+            const float* pa = &m.tris[static_cast<size_t>(t) * 9 + static_cast<size_t>(c) * 3];
+            const float* pb = &m.tris[static_cast<size_t>(t) * 9 + static_cast<size_t>((c + 1) % 3) * 3];
+            char key[160];
+            const bool swap = std::tie(pa[0], pa[1], pa[2]) > std::tie(pb[0], pb[1], pb[2]);
+            const float* lo = swap ? pb : pa; const float* hi = swap ? pa : pb;
+            std::snprintf(key, sizeof key, "%.3f,%.3f,%.3f|%.3f,%.3f,%.3f", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            if (!fx.edges.insert(key).second) continue;
+            Spark sk;
+            for (int k = 0; k < 3; ++k) { sk.a[k] = rig.site[k] + pa[k] * sc; sk.b[k] = rig.site[k] + pb[k] * sc; }
+            fx.sparks.push_back(sk);
+          }
+        }
+        fx.prev_revealed = std::max(fx.prev_revealed, revealed);
+        for (Spark& sk : fx.sparks) sk.t += dt * fx.spark_speed;
+        fx.sparks.erase(std::remove_if(fx.sparks.begin(), fx.sparks.end(), [](const Spark& k) { return k.t > 1.0f; }), fx.sparks.end());
       }
       const float remaining = rig.bq.remaining;
       for (size_t i = 0; i < fx.bees.size(); ++i) {
@@ -5269,6 +5315,26 @@ void Game::OnFrame(double dt) {
         const std::string bee_sod = s.SodOfOdf(ToLowerAscii(bee_odf));
         const auto fxit = s.build_fx.find(rig.id);
         if (fxit == s.build_fx.end()) continue;
+        if (s.source && !fxit->second.sparks.empty()) {   // edge sparks: sprite xspark (weapon.spr, texture xspark01, 4 x 4 frames), camera facing, size weldingRadius
+          const float rx[3] = {rot.m[0], rot.m[4], rot.m[8]}, ry[3] = {rot.m[1], rot.m[5], rot.m[9]};
+          const float h = fxit->second.spark_radius;
+          std::vector<float> mesh;
+          for (const Impl::Spark& sk : fxit->second.sparks) {
+            float p[3];
+            for (int k = 0; k < 3; ++k) p[k] = sk.a[k] + (sk.b[k] - sk.a[k]) * sk.t;
+            const int fr = static_cast<int>(s.clock * fxit->second.spark_anim * 4.0) & 15;   // frame rate: ASSUMED (animation speed x 4 frames per second)
+            const float u0 = (fr % 4) * 0.25f, v0 = (fr / 4) * 0.25f, u1 = u0 + 0.25f, v1 = v0 + 0.25f;
+            float c[4][3];
+            for (int k = 0; k < 3; ++k) {
+              c[0][k] = p[k] - rx[k] * h - ry[k] * h; c[1][k] = p[k] + rx[k] * h - ry[k] * h;
+              c[2][k] = p[k] + rx[k] * h + ry[k] * h; c[3][k] = p[k] - rx[k] * h + ry[k] * h;
+            }
+            const float uv[4][2] = {{u0, v1}, {u1, v1}, {u1, v0}, {u0, v0}};
+            for (int q : {0, 1, 2, 0, 2, 3}) mesh.insert(mesh.end(), {c[q][0], c[q][1], c[q][2], uv[q][0], uv[q][1]});
+          }
+          const float tint[3] = {1.0f, 1.0f, 1.0f};
+          s.effects.DrawMesh(proj, view, mesh, "xspark01", tint, 1.0f, *s.source);
+        }
         for (const Impl::Bee& b : fxit->second.bees) {
           if (b.state >= 8) continue;
           if (!bee_sod.empty() && s.EnsureSpawnModel(bee_sod)) {
@@ -5293,7 +5359,7 @@ void Game::OnFrame(double dt) {
               float sd[3] = {d[1] * cf[2] - d[2] * cf[1], d[2] * cf[0] - d[0] * cf[2], d[0] * cf[1] - d[1] * cf[0]};
               const float sl = std::sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
               if (sl > 1e-4f) {
-                const float w = 0.5f * std::max(beam_w, dist / 900.0f) / sl;   // visible at any zoom (client choice)
+                const float w = 0.5f * beam_w / sl;   // width weldingBeamWidth as in the original (no zoom compensation)
                 for (float& q : sd) q *= w;
                 const int frame = static_cast<int>(s.clock * 10.0) & 3;
                 const float u0 = frame * 0.25f, u1 = u0 + 0.25f;
@@ -5865,6 +5931,30 @@ std::string Game::DebugOrder(const std::string& kind) {
   int n = 0;
   unsigned first_station = 0;
   for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { first_station = o.id; break; }
+  if (kind == "mining") {  // test: a mining station next to the first human station, then a freighter from the shipyard-like producer
+    const Impl::Spawned* st0 = nullptr;
+    for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { st0 = &o; break; }
+    if (!st0) return "no station";
+    const float mp[3] = {st0->st.pos[0] - 500.0f, 0.0f, st0->st.pos[2]};
+    if (!s.SpawnAt("fmining", s.human_team, mp, false, false)) return "mining station not spawned";
+    return "mining station spawned";
+  }
+  if (kind == "buildmine") {  // test: the first human construction ship builds a mining station next to the nearest moon
+    for (Impl::Spawned& o : s.spawned) {
+      if (o.team != s.human_team || !o.movable || o.build_items.empty()) continue;
+      int best = -1; float bd = 1e30f;
+      for (size_t k = 0; k < s.moons.size(); ++k) { const float d = std::hypot(s.moons[k].pos[0] - o.st.pos[0], s.moons[k].pos[2] - o.st.pos[2]); if (d < bd) { bd = d; best = static_cast<int>(k); } }
+      if (best < 0) return "no moon";
+      const auto& mo = s.moons[static_cast<size_t>(best)];
+      float dx = o.st.pos[0] - mo.pos[0], dz = o.st.pos[2] - mo.pos[2];
+      const float l = std::max(1.0f, std::hypot(dx, dz));
+      o.site_odf = "fmining";
+      o.site[0] = mo.pos[0] + dx / l * 150.0f; o.site[1] = 0; o.site[2] = mo.pos[2] + dz / l * 150.0f;
+      o.has_site = true;
+      return "site set at moon " + std::to_string(best) + " dist " + std::to_string(bd);
+    }
+    return "no rig";
+  }
   if (kind == "repair") {  // test: a shipyard next to the first human station, every human warship damaged (systems lost, crew half), then the repair order
     const Impl::Spawned* st0 = nullptr;
     for (const Impl::Spawned& o : s.spawned) if (o.team == s.human_team && !o.movable) { st0 = &o; break; }
@@ -5924,7 +6014,7 @@ std::string Game::DebugReport() const {
       }
     for (const Impl::Spawned& o : s.spawned)
       if (o.team == t && o.freighter && !o.dying) {
-        std::snprintf(buf, sizeof buf, "  freighter %u state %d phase %d cargo %.0f pos (%.0f,%.1f,%.0f) target %d speed %.1f\n", o.id, o.fr_state, o.dock_phase, o.cargo, o.st.pos[0], o.st.pos[1], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.speed);
+        std::snprintf(buf, sizeof buf, "  freighter %u state %d phase %d cargo %.0f pos (%.0f,%.1f,%.0f) target %d (%.0f,%.0f) moon %d speed %.1f manual %d\n", o.id, o.fr_state, o.dock_phase, o.cargo, o.st.pos[0], o.st.pos[1], o.st.pos[2], o.st.has_target ? 1 : 0, o.st.target[0], o.st.target[2], o.fr_moon, o.st.speed, o.fr_manual ? 1 : 0);
         out += buf;
       }
     for (const Impl::Spawned& o : s.spawned)

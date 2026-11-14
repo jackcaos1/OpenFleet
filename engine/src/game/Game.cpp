@@ -405,7 +405,8 @@ struct Game::Impl {
     float ord_p0[3] = {0, 0, 0}, ord_p1[3] = {0, 0, 0};  // Patrouille: Start und Ziel; Erkunden: Startposition (+0x90) / aktuelles Ziel (+0x9c)
     int ord_leg = 0;
     float ord_r = 500;                      // Erkunden: Suchradius (+0x8c)
-    float ord_stuck_t = 0, ord_last[3] = {0, 0, 0};  // Festhaengen: Ort (+0x140) und Zeit (+0x13c)
+    int ord_stamp = 0;                      // +0x13c: whole second of the last movement
+    float ord_last[3] = {0, 0, 0};  // Festhaengen: Ort (+0x140) und Zeit (+0x13c)
     float ord_think = 0;
   };
   struct Moon { float pos[3]; float radius; float amount; bool infinite; std::string name, wire; float amount0 = 1; unsigned user = 0; };
@@ -2003,7 +2004,7 @@ struct Game::Impl {
   // ---- Befehle: Wache, Patrouille, Erkunden, Suchen und Zerstoeren (docs/formats/orders.md) ----
   // Originalhandler je Auftragstyp (CraftProcess, Tabelle 0x42813c): GUARD 0x428690, SCOUT 0x42b870, HUNT 0x42bb20. Zielwahl FindTarget 0x42ff80:
   // behaelt das Ziel, solange es innerhalb Waffenreichweite - 25 liegt, sonst naechster Feind in dieser Reichweite (0x4300a0). Annaeherung 0x42bd50:
-  // weiter weg als Reichweite - 50: zum Ziel fliegen, sonst halten und schiessen. Patrouille ist NICHT gelesen (ANNAHME: hin und her zwischen Start und Ziel).
+  // weiter weg als Reichweite - 50: zum Ziel fliegen, sonst halten und schiessen. Patrouille: zyklische Wegpunktliste (GO-Handler 0x428170, gelesen).
   float WeaponReach(const Spawned& s) const {
     float r = 0;
     for (const WeaponRt& w : s.weapons) r = std::max(r, w.range);
@@ -2011,7 +2012,7 @@ struct Game::Impl {
   }
   Shroud& TeamShroud(int team) {
     Shroud& sh = shroud[team];
-    if (sh.Empty()) sh.Init(map_lo[0], -map_hi[1], map_hi[0], -map_lo[1], 100.0f);
+    if (sh.Empty()) sh.Init(map_lo[0], -map_hi[1], map_hi[0], -map_lo[1], 400.0f);  // exploration_map_resolution
     return sh;
   }
   int AcquireOrderTarget(size_t i, float reach) {
@@ -2089,54 +2090,52 @@ struct Game::Impl {
       return;
     }
     const int t = armed ? AcquireOrderTarget(i, reach) : -1;
-    if (t >= 0) {
+    // Patrol (GO handler 0x428170): FindTarget only sets the fire target (+0x74); the craft keeps following its waypoints.
+    if (t >= 0 && s.order != Spawned::kOrdPatrol) {
       EngageTarget(s, spawned[static_cast<size_t>(t)], reach);
       return;
     }
-    s.target_id = 0;
+    if (s.order != Spawned::kOrdPatrol || t < 0) s.target_id = 0;
     if (!CanFly(s)) return;
-    // Festhaengen: bewegt sich das Schiff 6 s nicht um mehr als 1 m, wird ein neues Ziel gewaehlt (+0x13c / +0x140)
+    // Stuck detection (0x42b870 / 0x42bb20): the position snapshot (+0x140) is renewed when the craft moved more than 1 m (squared distance > 1.0, 0x5ca7d8)
+    // and the whole-second time stamp (+0x13c, the game time truncated to an integer) with it; stuck = more than 6 (0x5ca7cc) whole seconds without such a move.
+    const int now_sec = static_cast<int>(std::floor(clock));
     if (Dist3(s.st.pos, s.ord_last) > 1.0f) {
       for (int k = 0; k < 3; ++k) s.ord_last[k] = s.st.pos[k];
-      s.ord_stuck_t = 0;
-    } else {
-      s.ord_stuck_t += 0.25f;
+      s.ord_stamp = now_sec;
     }
-    const bool stuck = s.ord_stuck_t > 6.0f;
+    const bool stuck = now_sec - s.ord_stamp > 6;
     const float tight = s.hodf_ok ? s.hodf.tooCloseToTurn : 50.0f;
     if (s.order == Spawned::kOrdPatrol) {
+      // Waypoint list [tapped point, start], cycled (mode 2 of the GO handler, 0x42ded0); a point counts as reached below pathLeadDistance (class +0x214, default 150).
       const float* goal = s.ord_leg == 0 ? s.ord_p1 : s.ord_p0;
-      if (Dist3(s.st.pos, goal) < std::max(tight, 100.0f)) s.ord_leg ^= 1;
+      if (Dist3(s.st.pos, goal) < 150.0f) s.ord_leg ^= 1;
       SetShipTarget(&s.st, s.ord_leg == 0 ? s.ord_p1 : s.ord_p0);
       return;
     }
     if (s.order == Spawned::kOrdScout) {
       Shroud& sh = TeamShroud(s.team);
-      const float dx = s.st.pos[0] - s.ord_p1[0], dz = s.st.pos[2] - s.ord_p1[2];
-      if (dx * dx + dz * dz < 10000.0f || stuck || !s.st.has_target) {
-        if (!stuck) sh.Reveal(s.st.pos[0], s.st.pos[2], scan);
+      const float dx = s.st.pos[0] - s.ord_p1[0], dy = s.st.pos[1] - s.ord_p1[1], dz = s.st.pos[2] - s.ord_p1[2];
+      if (dx * dx + dy * dy + dz * dz < 10000.0f || stuck || !s.st.has_target) {   // arrived (100 m, 0x5ca79c) or stuck
+        if (stuck) sh.MarkCell(s.ord_p1[0], s.ord_p1[2]);                           // 0x4220b0: only a stuck craft marks its goal
         float nx = 0, nz = 0;
-        s.ord_stuck_t = 0;
-        if (sh.FindUnseen(s.ord_p0[0], s.ord_p0[2], s.ord_r, rng.F01(), &nx, &nz)) {
+        auto walkable = [&](float px, float pz) { return path_grid.Empty() || !path_grid.Blocked(px, -pz); };
+        if (sh.FindNearestUnseen(s.ord_p0[0], s.ord_p0[2], s.ord_r, s.st.pos[0], s.st.pos[2], walkable, &nx, &nz)) {
           s.ord_p1[0] = nx; s.ord_p1[1] = 0; s.ord_p1[2] = nz;
+        } else if ((map_hi[0] - map_lo[0]) * 1.4142135f > s.ord_r) {   // x extent x 1.414 (0x5ca7a4)
+          s.ord_r += 500.0f;                                             // 0x5ca7a0
         } else {
-          const float lim = std::hypot(map_hi[0] - map_lo[0], map_hi[1] - map_lo[1]);
-          if (lim > s.ord_r) {
-            s.ord_r += 500.0f;  // 0x5ca7a0
-          } else {
-            s.ord_r = 100.0f;   // Suchradius erschoepft: Karte vergessen und von vorn (0x421900)
-            sh.Clear();
-          }
+          bool ai_team = false;
+          for (const AiTeam& at : ai_teams) ai_team = ai_team || at.team == s.team;
+          if (!ai_team) { sh.Clear(); s.ord_r = 100.0f; }                // 0x421900, only for non-AI teams (0x472100)
         }
       }
       SetShipTarget(&s.st, s.ord_p1);
       return;
     }
     if (s.order == Spawned::kOrdHunt) {
-      TeamShroud(s.team).Reveal(s.st.pos[0], s.st.pos[2], scan);  // 0x421af0
       const float dx = s.st.pos[0] - s.ord_p1[0], dz = s.st.pos[2] - s.ord_p1[2];
       if (dx * dx + dz * dz < tight * tight || stuck || !s.st.has_target) {
-        s.ord_stuck_t = 0;
         for (int n = 0; n < 100; ++n) {  // bis zu 100 Versuche: Zufallspunkt der Karte (Rand 100) auf einer begehbaren Zelle
           const float x = map_lo[0] + 100.0f + rng.F01() * std::max(1.0f, map_hi[0] - map_lo[0] - 200.1f);
           const float zo = map_lo[1] + 100.0f + rng.F01() * std::max(1.0f, map_hi[1] - map_lo[1] - 200.1f);
@@ -2155,7 +2154,7 @@ struct Game::Impl {
     s.target_id = 0;
     s.auto_move = 0;
     s.ord_think = 0;
-    s.ord_stuck_t = 0;
+    s.ord_stamp = static_cast<int>(std::floor(clock));
     for (int k = 0; k < 3; ++k) {
       s.ord_p0[k] = s.st.pos[k];
       s.ord_last[k] = s.st.pos[k];
@@ -2186,6 +2185,7 @@ struct Game::Impl {
       if (s.beam_timer > 0) s.beam_timer -= dt;             // Original 0x46708a: zaehlt nur, solange er ueber 0 ist
       if (s.beam_id && s.beam_timer <= 0 && !s.derelict) DoBeam(s);
       StepSpecials(s, dt);
+      if (s.team > 0 && !s.derelict && s.hp.alive() && s.movable) TeamShroud(s.team).MarkCell(s.st.pos[0], s.st.pos[2]);  // 0x422000: every craft marks its cell each frame
     }
     StepParties(dt);
     for (size_t i = 0; i < spawned.size(); ++i) {
@@ -3507,17 +3507,22 @@ struct Game::Impl {
     return false;
   }
 
+  // Repair bay of a yard-class object. Read from 0x45e540: the repair queue manager is made from the object's OWN world matrix (not from a hardpoint): its docking point is the object's
+  // position, the axis its front, and the queue base lies dockingBuffer (default 90) behind it (vector = -front x dockingBuffer). The "repair" node of the models is not read by the class loader.
+  void RepairBay(const Spawned& y, float pos[3], float dir[3]) const {
+    ShipForward(y.st, dir);
+    for (int k = 0; k < 3; ++k) pos[k] = y.st.pos[k];
+  }
+
   // Yard choice of the repair order (0x45ecd0, VERIFIED): own yard-class objects with repairFacility that are neither derelict nor disabled; the cheapest by
-  // (surface distance / speed + 5 x ships in its queue, constant 0x5ca6c0 = 5.0). Without a "repair" hardpoint (the starbase models have none) the object is skipped (client choice).
+  // (surface distance / speed + 5 x ships in its queue, constant 0x5ca6c0 = 5.0). Without a "repair" hardpoint .
   int FindRepairYard(const Spawned& f) {
     int best = -1;
     float bc = 1e30f;
     const float speed = std::max(0.1f, f.hodf_ok ? f.hodf.impulseSpeed : 20.0f);
     for (size_t k = 0; k < spawned.size(); ++k) {
       const Spawned& y = spawned[k];
-      if (y.team != f.team || !y.repair_fac || y.starbase_cls || y.derelict || y.dying || !y.hp.alive() || y.movable) continue;
-      float hp[3], hd[3];
-      if (!HardpointWorld(y, "repair", hp, hd)) continue;
+      if (y.team != f.team || !y.repair_fac || y.derelict || y.dying || !y.hp.alive() || y.movable) continue;
       const float d = Dist3(y.st.pos, f.st.pos) - RadiusOf(f) - RadiusOf(y);
       const float c = d / speed + 5.0f * static_cast<float>(y.dq.size());
       if (c < bc) { bc = c; best = static_cast<int>(k); }
@@ -3537,27 +3542,41 @@ struct Game::Impl {
       float hp_pos[3], hp_dir[3];
       if (yi >= 0) {
         const Spawned& y = spawned[static_cast<size_t>(yi)];
-        if (!y.repair_fac || y.derelict || y.dying || !y.hp.alive() || y.team != f.team || !HardpointWorld(y, "repair", hp_pos, hp_dir)) yi = -1;
+        if (!y.repair_fac || y.derelict || y.dying || !y.hp.alive() || y.team != f.team) yi = -1;
+        else RepairBay(y, hp_pos, hp_dir);
       }
       if (yi < 0) {  // the yard is gone: look for another one (the handler does this every frame)
         LeaveRepairQueue(f);
         yi = FindRepairYard(f);
         if (yi < 0) { f.order = Spawned::kOrdNone; f.ord_target = 0; f.st.has_target = false; continue; }
         f.ord_target = spawned[static_cast<size_t>(yi)].id;
-        if (!HardpointWorld(spawned[static_cast<size_t>(yi)], "repair", hp_pos, hp_dir)) continue;
+        RepairBay(spawned[static_cast<size_t>(yi)], hp_pos, hp_dir);
       }
       Spawned& y = spawned[static_cast<size_t>(yi)];
       if (f.rp_state == 0) f.rp_state = 3;
       if (StepDocking(f, f.rp_state, y, hp_pos, hp_dir, dt)) continue;
       if (f.rp_state != 7) continue;
       f.rp_t += dt;
+      // Head of the queue (RepairQueueManager 0x5577f0 -> craft 0x4685c0(dt), VERIFIED): v = min(missing crew, team crew pool); computer players treat a pool under 10 (0x5ca55c) as 0.
+      // Finished when v < 0.1 (0x5caa18), every system is on with all points and the shield is full. Otherwise: whole crew units move from the pool to the craft, each frame
+      // t = v if v <= n else (n <= 1 ? 1 : n) with n = int(20 x dt) (0x5ccde4 = 20 per second), then the shield recharge and the five system repairs run once more with dt x 15 (0x5ca8a8).
       TeamResources& r = Res(f.team);
-      if (f.hp.crew_max > 0 && f.hp.crew < f.hp.crew_max && r.crew >= 1.0f) {
-        const float take = std::min(std::min(dt * 10.0f, r.crew), f.hp.crew_max - f.hp.crew);
-        SetCrew(&f.hp, f.hp.crew + take);
-        r.crew -= take;
+      bool ai_team = false;
+      for (const AiTeam& at : ai_teams) ai_team = ai_team || at.team == f.team;
+      float v = std::min(r.crew, std::max(0.0f, f.hp.crew_max - f.hp.crew));
+      if (ai_team && r.crew < 10.0f) v = 0;
+      bool systems_ok = f.hp.shield >= f.hp.shield_max;
+      for (const SystemBlock& sb : f.hp.sys) if (sb.max_points > 0 && (!sb.active || sb.points < sb.max_points)) systems_ok = false;
+      if (!(v < 0.1f && systems_ok)) {
+        const int n = static_cast<int>(20.0f * dt);
+        const float t = v <= static_cast<float>(n) ? v : (n <= 1 ? 1.0f : static_cast<float>(n));
+        if (t > 0 && f.hp.crew_max > 0) {
+          r.crew = std::min(r.crew - t, r.crew_max);
+          SetCrew(&f.hp, std::min(f.hp.crew + t, f.hp.crew_max));
+        }
+        StepDockedRepair(&f.hp, dt * 15.0f);
       }
-      if ((f.hp.crew_max <= 0 || f.hp.crew >= f.hp.crew_max - 0.5f) && !f.hp.damaged()) {
+      if (v < 0.1f && systems_ok) {
         y.dq.erase(std::remove(y.dq.begin(), y.dq.end(), f.id), y.dq.end());
         y.dq_len = std::max(0.0f, y.dq_len - 2.0f * RadiusOf(f));
         y.docked_id = 0;
@@ -3566,7 +3585,9 @@ struct Game::Impl {
         f.rp_t = 0;
         f.order = Spawned::kOrdNone;
         f.ord_target = 0;
-        BeginExit(i, y, hp_pos, hp_dir, false);
+        float bp[3], bd[3];   // leaves through the output queue at the yard's build hardpoint (0x45dc00 uses hardpoint +0x7cc)
+        if (!HardpointWorld(y, "build", bp, bd)) RepairBay(y, bp, bd);
+        BeginExit(i, y, bp, bd, false);
       }
     }
   }
@@ -4096,13 +4117,13 @@ struct Game::Impl {
     return false;
   }
 
-  // Rally point of a yard (+0x7d8): changed by order 16 (SET_RALLY, 0x426ebe), otherwise the default made when the yard is created (0x45e540):
-  // position + front x 3 x radius (constant 0x5cb170 = 3.0). Y stays on the tap plane (client ships fly on it).
+  // Rally point of a yard (+0x7d8): changed by order 16 (SET_RALLY, 0x426ebe). Default: position + front x 2 x radius. The creation routine 0x45e540 first uses 3 x radius, but the
+  // Shipyard virtual slot 47 (0x45e9f0, called when the owner is assigned, 0x46dfc0) overwrites it with 2 x radius. Y stays on the tap plane (client ships fly on it).
   void RallyOf(const Spawned& yard, float out[3]) const {
     if (yard.rally_set) { for (int k = 0; k < 3; ++k) out[k] = yard.rally[k]; return; }
     float f[3];
     ShipForward(yard.st, f);
-    const float r = 3.0f * RadiusOf(yard);
+    const float r = (yard.starbase_cls ? 3.0f : 2.0f) * RadiusOf(yard);   // the Starbase slot 47 (0x45f4b0) does not touch the rally point
     out[0] = yard.st.pos[0] + f[0] * r;
     out[1] = kTapPlaneY;
     out[2] = yard.st.pos[2] + f[2] * r;
@@ -4389,7 +4410,7 @@ struct Game::Impl {
     const bool armed = !sp.weapons.empty();
     bool repair_station = false;  // 0x45ebe0: gibt es ein Objekt des eigenen Teams mit Reparaturbucht (Werft; repairFacility)?
     for (const Spawned& o : spawned)
-      if (o.team == sp.team && !o.movable && !o.dying && !o.derelict && o.repair_fac && !o.starbase_cls) repair_station = true;
+      if (o.team == sp.team && !o.movable && !o.dying && !o.derelict && o.repair_fac) repair_station = true;
     const bool producer = !sp.build_items.empty();
     if (cmd_page == CmdPage::Main) {
       st->control[0] = cmd(UiAction::Move, "b_move", "Bewegen", live && movable, move_armed);

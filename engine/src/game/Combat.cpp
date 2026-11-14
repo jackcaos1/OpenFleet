@@ -264,13 +264,7 @@ int ApplyHitTo(Health* h, int idx, const HitInfo& hit) {
   return destroyed;
 }
 
-void StepHealth(Health* h, float dt) {
-  if (!h->alive() || h->derelict) return;
-  for (int i : kBlockOrder)
-    if (!h->sys[i].active) Reenable(&h->sys[i], dt);
-  for (int i : kBlockOrder) Repair(h, &h->sys[i], dt);
-  if (!h->sys[kLife].active && h->crew_max > 0) LoseCrew(h, h->life_support_loss * dt, std::min(dt, 1.0f));  // 0x465f6f
-  // Schildaufladung (0x466b00)
+static void RechargeShield(Health* h, float dt) {
   if (h->sys[kShield].active && h->shield < h->shield_max && h->shield_rate > 0) {
     float t = dt;
     bool wait = false;
@@ -285,6 +279,21 @@ void StepHealth(Health* h, float dt) {
     }
     if (!wait) h->shield = std::min(h->shield + t * h->shield_rate, h->shield_max);
   }
+}
+
+void StepHealth(Health* h, float dt) {
+  if (!h->alive() || h->derelict) return;
+  for (int i : kBlockOrder)
+    if (!h->sys[i].active) Reenable(&h->sys[i], dt);
+  for (int i : kBlockOrder) Repair(h, &h->sys[i], dt);
+  if (!h->sys[kLife].active && h->crew_max > 0) LoseCrew(h, h->life_support_loss * dt, std::min(dt, 1.0f));  // 0x465f6f
+  RechargeShield(h, dt);
+}
+
+void StepDockedRepair(Health* h, float dt) {
+  if (!h->alive() || h->derelict) return;
+  RechargeShield(h, dt);  // 0x466b00
+  for (int i : kBlockOrder) Repair(h, &h->sys[i], dt);  // 0x4683d0 for the five blocks
 }
 
 Dying MakeDying(float speed, bool hero) {

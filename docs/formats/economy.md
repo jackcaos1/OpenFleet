@@ -71,7 +71,8 @@ Refunds `decommissionValue` (class +0xa0) dilithium and the craft's current crew
   disappears once the bay doors begin to close), `timeWelding` (+0x578, 0.5 s per point); `weldingRadius` (spark size, 0x46a470).
 - **Bee state machine (0x518250, partly read):** per bee a record with the state in +0x3c (0..7), a timer in +0x40, the owner (the rig) handle in +0x7c, a flight curve (object +0x6c, parameter +0x70, evaluated by 0x58c9d0 / 0x58c930)
   and a weld target (+0x5c, chosen by 0x50d2f0 from the placeholder). The states switch on distance thresholds (squared compare with 0x5d2af8) and on the timer; state 4 waits `timeWelding`,
-  state 7 waits `timeUntilClosure` and then the bee is removed (0x5195c0). The curve geometry and the target choice are **not read**.
+  state 7 waits `timeUntilClosure` and then the bee is removed (0x5195c0). Traced in build 110: state 1 flies to the point `home hardpoint + front x (rig radius + 0x5d2af4)` (hardpoint matrix via 0x58c9d0 with the handle +0x70); on arrival (squared distance < 0x5d2af8) the weld target is chosen (0x50d2f0 with the placeholder +0x74, stored +0x5c, offset +0x78),
+a spline through a control point (+0x50, built by 0x450270 / 0x450f40 / 0x4ef9a0) is set up and state 3 starts; state 3 ends on reaching +0x50 (state 4, timer = +0x4c); state 4 waits, then chooses a new target again (loop 3 -> 4); the later states 5..7 (return flight, closing) and the movement code after 0x5187d5 were not read.
 - **BuildingEffect (0x50c950 update / 0x50caa0 draw, create 0x50cce0):** an effect record per construction with a duration (+0x1c) and time left (+0x20); the update counts the time down and
   derives a count (time fraction x +0xd0) that the draw routine hands to the placeholder mesh (0x58ce40), i.e. the structure appears progressively. Sub-effects (sparks) are updated in a list (+0x108).
   The exact reveal order is **not read**.

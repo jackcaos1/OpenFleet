@@ -131,6 +131,8 @@ int ApplyHitTo(Health* h, int idx, const HitInfo& hit);
 // Ein Bild: Wiedereinschalten, Reparatur aller Systeme (gleichzeitig), Lebenserhaltung, Schildaufladung (0x465e80). Derelict und zerstoerte
 // Schiffe tun nichts.
 void StepHealth(Health* h, float dt);
+// 0x4685c0 (docked repair): the shield recharge and the system repairs once more with the scaled step (dt x 15, 0x5ca8a8); no life support, no re-enabling.
+void StepDockedRepair(Health* h, float dt);
 
 // Besatzung setzen und die Folgen ziehen (0x466ca0): unter 1,0 mit Maximalbesatzung > 0 wird das Schiff Derelict (alle Systeme aus, Schild 0)
 // oder explodiert bei laufendem Selbstzerstoerungs-Countdown; ab 1,0 gilt es wieder als bemannt und die Systeme werden wieder eingeschaltet.

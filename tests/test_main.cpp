@@ -1724,16 +1724,20 @@ static void TestShroud() {
   sh.Init(-1000, -1000, 1000, 1000, 100.0f);
   CHECK(!sh.Empty());
   CHECK(!sh.Seen(0, 0));
-  sh.Reveal(0, 0, 250);
+  sh.MarkCell(10, 10);  // one cell only
   CHECK(sh.Seen(0, 0));
-  CHECK(sh.Seen(100, 0));
-  CHECK(!sh.Seen(600, 0));
+  CHECK(!sh.Seen(150, 0));
   float x = 0, z = 0;
-  // Everything within r of the centre is revealed -> no unexplored point; a larger radius finds one outside.
-  CHECK(!sh.FindUnseen(0, 0, 150, 0.3f, &x, &z));
-  CHECK(sh.FindUnseen(0, 0, 800, 0.3f, &x, &z));
+  auto any = [](float, float) { return true; };
+  // Nearest to the craft among the unexplored cells within r of the anchor (0x41fd80); the marked cell (0..100) is skipped.
+  CHECK(sh.FindNearestUnseen(0, 0, 800, 20, 20, any, &x, &z));
   CHECK(!sh.Seen(x, z));
+  CHECK(std::hypot(x - 20, z - 20) < 120.0f);
   CHECK(std::hypot(x, z) <= 800.0f);
+  // Nothing unexplored within a radius smaller than the cell distance
+  CHECK(!sh.FindNearestUnseen(0, 0, 40, 0, 0, any, &x, &z));
+  // Cells rejected by the predicate are not chosen
+  CHECK(sh.FindNearestUnseen(0, 0, 800, 20, 20, [](float px, float) { return px > 500; }, &x, &z) && x > 500);
   sh.Clear();
   CHECK(!sh.Seen(0, 0));
   CHECK(sh.Seen(5000, 5000));  // outside the map counts as seen
